@@ -1,0 +1,28 @@
+# secrets — never commit
+creds.txt
+*.env
+.env*
+server/state/
+server/app/state/
+auth_state.json
+storage_state.json
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# node / android
+node_modules/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.keystore
+*.jks
+
+# playwright
+scratch/
+
+# local debugging artefacts
+verfication.png

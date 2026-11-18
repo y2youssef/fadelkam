@@ -1,0 +1,57 @@
+{
+ "header": {
+  "retCode": "0",
+  "validateResults": []
+ },
+ "body": [
+  {
+   "tabId": "2",
+   "freeUnitType": "MOBILE_INTERNET_USAGE_PREPAID",
+   "freeUnitTypeName": "Mobile Internet",
+   "tabName": "Mobile Internet",
+   "measureUnit": "1108",
+   "offerName": "Nitro Prime 105. Prepaid",
+   "total": 12500.0,
+   "used": 8553.22,
+   "remain": 3946.78,
+   "actualRemain": 3946.78,
+   "effectiveTime": 1794385801000,
+   "expireTime": 1796767200000,
+   "groupOrder": "13",
+   "iconImage": "internet",
+   "freeUnitTypeId": "C_New_Mobile_Internet_II",
+   "originUnit": "1106",
+   "havePoint": false,
+   "freeUnitBeanDetailList": [
+    {
+     "initialAmount": 6250.0,
+     "currentAmount": 3946.78,
+     "measureUnit": "1108",
+     "effectiveTime": 1794385801000,
+     "expireTime": 1796767200000,
+     "expireTimeCz": 1796760000000,
+     "originType": "Nitro Bundle",
+     "offeringName": "Nitro Prime 105. Prepaid",
+     "isGroup": false,
+     "serviceNumber": "01500000000",
+     "itemCode": "C_New_Mobile_Internet_II",
+     "remainingDaysForRenewal": 20
+    },
+    {
+     "initialAmount": 6250.0,
+     "currentAmount": 0.0,
+     "measureUnit": "1108",
+     "effectiveTime": 1792852815000,
+     "expireTime": 1795212000000,
+     "expireTimeCz": 1795204800000,
+     "originType": "Nitro Bundle",
+     "offeringName": "Nitro Prime 105. Prepaid",
+     "isGroup": false,
+     "serviceNumber": "01500000000",
+     "itemCode": "C_New_Mobile_Internet_II",
+     "remainingDaysForRenewal": 2
+    }
+   ]
+  }
+ ]
+}
