@@ -13,7 +13,9 @@ against repeated SMS/captcha challenges.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import random
 import re
 import time
@@ -68,6 +70,7 @@ class WeClient:
         self.antidebug_stubbed = 0
         self.antidebug_hits = 0
         self._doc_loaded_at: float | None = None
+        self._saved_cookies: str | None = None
         REDACT.add(creds.password, "password")
         REDACT.add(creds.phone, "phone", keep_last=3)
 
@@ -128,6 +131,7 @@ class WeClient:
         self.page = await self._single_page()
         self.page.on("load", lambda _p: self._on_load())  # real document loads only, not hash routes
         self._on_load()  # a restored tab loaded moments ago; never leave the age unknown
+        await self._restore_session_cookies()
         restored = await self.has_session_token()
         if restored:
             self.guard.resume_session()
@@ -148,7 +152,58 @@ class WeClient:
             await b.close()
         return ua.replace("HeadlessChrome", "Chrome")
 
+    # ------------------------------------------------------------------ session cookie persistence
+    @property
+    def _cookie_file(self) -> Path:
+        return self.s.state_dir / "session_cookies.json"
+
+    async def save_session_cookies(self) -> None:
+        """Backstop for --restore-last-session (proven only after hard kills, and it lost a
+        20-s-old cookie). The file holds a live session token: state/ is private, and the file
+        is chmod 600 where supported."""
+        if not self.ctx:
+            return
+        try:
+            cookies = [c for c in await self.ctx.cookies() if "te.eg" in c["domain"]]
+        except PlaywrightError:
+            return
+        if not any(c["name"] == SESSION_COOKIE and c["value"] for c in cookies):
+            return
+        for c in cookies:
+            if c["name"] == SESSION_COOKIE:
+                REDACT.add(c["value"], "session")
+        text = json.dumps(cookies)
+        if text == self._saved_cookies:
+            return
+        tmp = self._cookie_file.with_suffix(".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, self._cookie_file)
+        self._saved_cookies = text
+
+    async def _restore_session_cookies(self) -> bool:
+        if not self._cookie_file.exists():
+            return False
+        if any(c["name"] == SESSION_COOKIE and c["value"] for c in await self.ctx.cookies()):
+            return False  # Chrome already restored the session
+        try:
+            cookies = json.loads(self._cookie_file.read_text(encoding="utf-8"))
+            await self.ctx.add_cookies(cookies)
+        except (OSError, ValueError, PlaywrightError) as e:
+            event(log, logging.WARNING, "session.cookie_restore_failed", error=str(e)[:200])
+            return False
+        event(log, logging.INFO, "session.cookies_restored_from_disk", count=len(cookies))
+        return True
+
+    def forget_session_cookies(self) -> None:
+        self._cookie_file.unlink(missing_ok=True)
+        self._saved_cookies = None
+
     async def close(self) -> None:
+        await self.save_session_cookies()
         for closer in (getattr(self.ctx, "close", None), getattr(self._pw, "stop", None)):
             if closer:
                 try:
@@ -294,6 +349,7 @@ class WeClient:
             except PlaywrightError:
                 pass
             await page.wait_for_timeout(3000)
+            await self.save_session_cookies()
             return
         self.guard.end_attempt(attempt, LoginGuard.outcome_for(err), err)
         err.incident = await save_incident(self.s, f"login_{err.kind}", page=page, recorder=self.recorder, error=err,
@@ -536,6 +592,7 @@ class WeClient:
             await asyncio.sleep(1)
             if self._on_login_page():
                 self.guard.end_session("redirected_to_login")
+                self.forget_session_cookies()
                 raise SessionExpired(f"redirected to login while opening {route}") from e
             await self._check_waf()
             err = PortalChanged(f"route {route} did not call {endpoint} within {timeout_ms} ms"
@@ -559,6 +616,7 @@ class WeClient:
             kw = {"error_no": header.get("errorNo"), "ret_code": header.get("retCode")}
             if self._on_login_page() or any(w in msg.lower() for w in ("session", "login", "token", "expired")):
                 self.guard.end_session(f"api:{header.get('errorNo')}")
+                self.forget_session_cookies()
                 raise SessionExpired(msg or "session expired", **kw)
             err = ApiError(msg or f"{endpoint} retCode {header.get('retCode')}", **kw)
             err.incident = await save_incident(self.s, "api_error", page=page, recorder=self.recorder, error=err)

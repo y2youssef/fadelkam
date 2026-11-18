@@ -101,10 +101,18 @@ def setup_logging(logs_dir: Path, level: str = "INFO") -> None:
     root = logging.getLogger("we")
     root.setLevel(level)
     root.propagate = False
-    root.addHandler(rotating("scraper.jsonl"))
+    main_file = rotating("scraper.jsonl")
+    root.addHandler(main_file)
     console = logging.StreamHandler()
     console.setFormatter(_ConsoleFormatter())
     root.addHandler(console)
+
+    # uvicorn (startup, errors, access log) goes to the same file + console, also redacted.
+    uv = logging.getLogger("uvicorn")
+    uv.setLevel(logging.INFO)
+    uv.propagate = False
+    uv.addHandler(main_file)
+    uv.addHandler(console)
 
     # Every API call goes only to api.jsonl (high volume); failures are re-logged on "we.portal".
     api = logging.getLogger("we.api")

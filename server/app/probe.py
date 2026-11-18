@@ -17,6 +17,8 @@ import asyncio
 import json
 import logging
 import os
+import shutil
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -42,11 +44,13 @@ async def terminal_code_provider(kind: str, image: Path | None) -> str | None:
     print(f"\n>>> WE is asking for a {kind}.", flush=True)
     if image:
         print(f">>> Captcha image: {image}", flush=True)
-        if os.name == "nt":
-            try:
-                os.startfile(image)  # type: ignore[attr-defined]  # pops it open on the desktop
-            except OSError:
-                pass
+        try:  # pop it open on the desktop if there is one
+            if os.name == "nt":
+                os.startfile(image)  # type: ignore[attr-defined]
+            elif shutil.which("xdg-open") and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+                subprocess.Popen(["xdg-open", str(image)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
     code_file = (image.parent if image else Path("state/challenge")) / "code.txt"
     code_file.unlink(missing_ok=True)
     if sys.stdin and sys.stdin.isatty():

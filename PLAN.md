@@ -127,9 +127,12 @@ _Last updated: 2026-11-18_
 - [ ] SMS-code challenge (same code-provider path as the captcha).
 
 ### 4.2 Server — API + push (`server/app/api.py`)
-- [ ] FastAPI app: `GET /quota`, `GET /events` (SSE), `POST /challenge`, `GET /healthz`.
-- [ ] Simple bearer-token auth on all endpoints (shared secret with the app).
-- [ ] Challenge workflow: when login needs SMS/captcha, mark state `challenge_pending`,
+- [x] Starlette app (FastAPI dropped: pydantic's compiled core is an avoidable risk on Py 3.15, and
+  isn't needed for six endpoints): `/healthz`, `/quota`, `/events` (SSE, 20 s heartbeat),
+  `/challenge` (+ `/image`, POST code), `/refresh`. Poller runs in the same process (`app/server.py`).
+- [x] Bearer-token auth (generated into `state/api_token`); binds to 127.0.0.1; reached via tunnel.
+- [x] Session cookie backed up to `state/` → graceful restarts don't cost a login.
+- [x] Challenge workflow: when login needs SMS/captcha, mark state `challenge_pending`,
   push an SSE alert ("enter SMS code"); app (or a web form) POSTs the code to `/challenge`.
 
 ### 4.3 Packaging (`server/`)

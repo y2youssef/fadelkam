@@ -39,22 +39,28 @@ log = get_logger("poller")
 
 class Poller:
     def __init__(self, settings: Settings, client: WeClient, *, code_provider: CodeProvider | None = None,
-                 on_update: Callable[[Quota], Awaitable[None]] | None = None) -> None:
+                 on_update: Callable[[Quota], Awaitable[None]] | None = None,
+                 on_status: Callable[[dict], None] | None = None, wake: asyncio.Event | None = None) -> None:
         self.s = settings
         self.client = client
         self.code_provider = code_provider
         self.on_update = on_update
+        self.on_status = on_status
+        self.wake = wake or asyncio.Event()
         self.last: Quota | None = None
         self.status: dict = {"state": "starting", "since": iso()}
         self._transient_streak = 0
         self._expired_streak = 0
 
     def _set_status(self, state: str, **extra) -> None:
-        if state != self.status.get("state"):
+        changed = state != self.status.get("state")
+        if changed:
             event(log, logging.INFO, "poller.state", state=state, **extra)
             self.status = {"state": state, "since": iso(), **extra}
         else:
             self.status.update(extra)
+        if self.on_status and (changed or state != "ok"):
+            self.on_status(dict(self.status))
 
     async def poll_once(self) -> Quota:
         await self.client.ensure_logged_in(self.code_provider)
@@ -66,6 +72,7 @@ class Poller:
                                              recorder=self.client.recorder, error=e)
             raise
         self._persist(body, quota)
+        await self.client.save_session_cookies()  # cheap no-op unless the cookie changed
         changed = self.last is None or quota.remaining_mb != self.last.remaining_mb
         event(log, logging.INFO, "quota.reading", remaining_mb=quota.remaining_mb, total_mb=quota.total_mb,
               renews_in_days=quota.renews_in_days, changed=changed,
@@ -129,7 +136,11 @@ class Poller:
             delay = await self.tick()
             delay *= random.uniform(0.9, 1.1)  # jitter: don't look like a metronome
             event(log, logging.DEBUG, "poller.sleep", seconds=round(delay))
-            await asyncio.sleep(delay)
+            try:  # a forced refresh (POST /refresh) wakes us early; the guard still gates logins
+                await asyncio.wait_for(self.wake.wait(), timeout=delay)
+            except asyncio.TimeoutError:
+                pass
+            self.wake.clear()
 
 
 async def main_async(argv: list[str]) -> int:
