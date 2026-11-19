@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 import secrets
+import signal
 import sys
 
 import uvicorn
@@ -30,6 +31,19 @@ from .poller import Poller
 from .we_client import WeClient
 
 log = get_logger("server")
+
+
+def absorb_reraised_signals(server: uvicorn.Server) -> None:
+    """uvicorn stops on SIGINT/SIGTERM and then re-raises the signal to the handler that was there
+    before serve(). For SIGTERM (systemctl stop) that is the default action, which killed the
+    process before our cleanup: Chrome got SIGKILLed, the session cookie wasn't saved at shutdown
+    and Firebase never heard "stopped" (seen 2026-11-19 15:27 UTC, FAILURE_MODES #49). With these
+    handlers installed first, the re-raise does nothing and serve() simply returns."""
+    def stop(_sig: int, _frame: object) -> None:
+        server.should_exit = True  # also covers a signal that lands just before uvicorn's handlers
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, stop)
 
 
 def ensure_token(s: Settings) -> str:
@@ -80,6 +94,7 @@ async def main_async(argv: list[str]) -> int:
         if cloud:
             tasks.append(asyncio.create_task(cloud.run(), name="cloud"))
         event(log, logging.INFO, "server.start", host=args.host, port=args.port, cloud=bool(cloud))
+        absorb_reraised_signals(server)
         try:
             await server.serve()  # returns on SIGINT/SIGTERM
         finally:

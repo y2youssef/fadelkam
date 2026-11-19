@@ -143,14 +143,17 @@ _Last updated: 2026-11-19_
 - [x] Security rules (`firebase/database.rules.json`): deny by default, phone scoped to its own uid
   once paired. CLI: `check`, `deploy-rules`, `pair`, `devices`, `revoke`, `test-push`.
 - [x] 20 offline tests against a fake Firebase (signature check, whitelist, retries, captcha round trip).
-- [ ] Owner creates the Firebase project (server/README.md, "Cloud"); first live `cloud check`.
+- [x] Firebase project `fadelkam-y2y` (RTDB europe-west1, anonymous auth) created 2026-11-19; rules
+  deployed, `cloud check` all ok, live `/state` written by the laptop since 15:27 UTC.
+- [x] Clean stop under systemd: uvicorn re-raised SIGTERM and killed the process before cleanup
+  (FAILURE_MODES #49); fixed with `absorb_reraised_signals`, verified live ("stopped" written, no SIGKILL).
 
 ### 4.3 Packaging (`server/`)
 - [ ] `Dockerfile` based on `mcr.microsoft.com/playwright/python:vX.Y` (pinned, Chromium preinstalled).
 - [ ] `docker-compose.yml` (env for creds, volume for `state/`, port map).
 - [ ] `.env.example`, `requirements.txt` (pinned).
 
-### 4.4 Android app (`android/`, package `com.fadelkam.wequota`)
+### 4.4 Android app (`android/`, package `com.fadelkam.y2y`, as registered in Firebase; `android/app/google-services.json` is in place)
 - [ ] Kotlin project, minSdk 26, targetSdk 35 (Android 15). Firebase BoM: Auth, Realtime Database, Messaging.
 - [ ] Pairing screen: anonymous sign-in → write `/pairing/<uid>` with a 6-digit code → wait for `/allowed/<uid>`.
 - [ ] Register the FCM token at `/devices/<uid>` (and on `onNewToken`); write `/inbox/<uid>/hello`.
@@ -198,7 +201,7 @@ _Last updated: 2026-11-19_
 - Runs as the systemd user service `we-quota` (`server/systemd/we-quota.service`), enabled, with
   linger, so it starts at boot before login. The Wi-Fi password is stored system-wide, so the network
   is up before login too.
-- First laptop login 2026-11-19 15:18:46 UTC, no captcha; first reading 15:18:51 (3631 of 6250 MB). Firebase still off (no key yet).
+- First laptop login 2026-11-19 15:18:46 UTC, no captcha; first reading 15:18:51 (3631 of 6250 MB). Firebase on since 15:27 UTC (key in `server/state/`, chmod 600).
 - Awake: Plasma never suspends when idle and ignores the lid (AC and battery). Optional root step for
   the login screen: `server/systemd/logind-lid-on-ac.conf`.
 
@@ -226,8 +229,8 @@ _Last updated: 2026-11-19_
 1. ~~De-risk login~~: done 2026-11-18.
 2. ~~Scraper + poller hardened~~: done; one session has lasted 16 h+.
 3. ~~Local API + SSE + captcha relay~~: done (now for development).
-4. ~~Cloud relay (Firebase)~~: code done 2026-11-19; waiting for the owner's Firebase project.
-5. ~~Move to the laptop~~ (CachyOS): venv, creds, systemd service: done 2026-11-19. Firebase key pending.
+4. ~~Cloud relay (Firebase)~~: done 2026-11-19 (project `fadelkam-y2y`).
+5. ~~Move to the laptop~~ (CachyOS): venv, creds, systemd service, Firebase key: done 2026-11-19.
 6. **Android toolchain** on the laptop (JDK 17, Android SDK platform 35, Gradle).
 7. **Thin APK** (4.4): pairing, FCM, sticky notification, captcha reply.
 8. **End-to-end test** on the Samsung phone; tune One UI 7 battery settings.
@@ -236,8 +239,7 @@ _Last updated: 2026-11-19_
 ---
 
 ## 9. Immediate next steps
-- [ ] Owner: create the Firebase project (5 console steps in `server/README.md`, "Cloud"), put the
-      key in `server/state/`, run `python -m app.cloud deploy-rules` and `check`.
+- [x] Firebase project created, key installed, rules deployed, `cloud check` ok (2026-11-19).
 - [x] Stop the server on the old PC **at least 10 min** before the laptop's first login (done 2026-11-19).
 - [ ] Owner, optional: install `server/systemd/logind-lid-on-ac.conf` (root) so the lid doesn't
       suspend at the login screen while plugged in.

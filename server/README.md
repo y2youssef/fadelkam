@@ -66,7 +66,7 @@ WE only ever sees the laptop's home IP. The free (Spark) plan is plenty.
 4. **Project settings → Service accounts → Generate new private key.** Save it as
    `server/state/firebase-service-account.json` and `chmod 600` it. It is admin access to the
    Firebase project: never commit it, never copy it to the phone.
-5. **Project settings → General → Add app → Android**, package `com.fadelkam.wequota`.
+5. **Project settings → General → Add app → Android**, package `com.fadelkam.y2y` (the one registered for this project).
    Download `google-services.json` into `android/app/` (git-ignored).
 
 Then, from `server/`:
