@@ -1,6 +1,6 @@
 # Failure modes & diagnostics: WE quota scraper
 
-_Last updated: 2026-11-18. Items marked **seen** were observed live; the rest are anticipated._
+_Last updated: 2026-11-19. Items marked **seen** were observed live; the rest are anticipated._
 
 ## Where to look when something breaks
 
@@ -38,7 +38,7 @@ Screenshots can't be redacted and show the phone number, so treat `state/` as pr
 | 13 | `queryFreeUnit` shape unknown (multiple buckets, DSL vs mobile, units) | Parser can't find the bucket → loud error; raw response kept | — | First live probe captures it. |
 | 14 | Number is `010…` (not WE-native `015`) | `creds.warning` at startup | — | Confirm the line is on WE (ported) and that the portal shows mobile data for it. |
 | 15 | Browser crash / profile lock left behind / memory creep | Launch error mentioning `Singleton*` | Stale lock removed, relaunch once | Poller will restart the browser periodically (TODO). |
-| 16 | Network outage / timeouts / 5xx | `TransientError` | Exponential backoff 1→30 min | — |
+| 16 | **seen:** Network outage / timeouts / 5xx. 2026-11-19 00:39–00:56 UTC: requests slowed (~500 ms), then DNS failed (`ERR_NAME_NOT_RESOLVED`). Bugs it exposed: (a) a keepalive reload that took ~35 s was reported as *portal changed* (10 min wait); (b) DNS failure during the session check escaped as `poller.unexpected`. **The session survived the outage** and the next reading came at 00:56. | `TransientError`, `quota.miss_as_transient` | Backoff 1→15 min. Fixes: a quota miss is transient until 3 in a row (`quota_miss_escalate`); reloads get the 45 s nav timeout; navigation errors anywhere become `TransientError`. Chrome reloads its own error page when the network returns. | — |
 | 17 | Clock skew on the server (the app sends `x-client-time`) | Unexplained refusals after deploy | — | Make sure NTP is on the VPS. |
 | 18 | Corrupt ledger file | JSON parse error | **Fail closed** (hard stop) | Inspect and reset. |
 | 19 | Disk fill | — | Logs rotate (5 MB × 10 per file); incidents capped at 50 | — |
@@ -53,6 +53,7 @@ Screenshots can't be redacted and show the phone number, so treat `state/` as pr
 | 31 | **Laptop host:** moving between networks changes the public IP. Unknown whether WE binds the session to the IP. | `session.ended` right after a network change | Guarded re-login | Collect evidence before doing anything about it |
 | 32 | Two machines (this PC and the laptop) logging into the account close together → "max attempts" (#1b). Each guard only sees its own machine. | `login_account_locked` incident | — | Stop one machine at least 10 min before the other logs in |
 | 33 | API exposed through a tunnel: token leak or brute force | `api.auth_failed` with client IP | Bearer token, 32 random bytes, constant-time compare; binds to 127.0.0.1 only | Rotate: delete `state/api_token`, restart, re-enter it in the app |
-| 28 | Server-side session lifetime: **still unknown**. Every session so far was ended by the client timer (#25) or a restart. | `session.ended` with no `app_logged_out` before it | Guarded re-login | Read lifetimes from `probe status` once the keepalive has run for a few hours. |
+| 34 | A long backoff (10 min "broken", up to 15 min transient) with a logged-in page open would outlast the SPA's 15 min logout timer (#25) and end the session: an 11 min old document plus 10 min means logged out at 15. Also, the old 180 s interval (+10 % jitter) after a 659 s document left only ~40 s of margin. | `poller.sleep_capped` | While a logged-in portal document is open, the poller never sleeps past document age 13 min (`keepalive_deadline_s`), so the keepalive reload always gets its turn. | — |
+| 28 | **seen, answered for now:** Server-side session lifetime with polling + keepalive is **over 16 h** (login 2026-11-18 17:58:59 UTC, still valid 2026-11-19 10:05 UTC, about 70 keepalive reloads, one 17 min network outage). So the "short sessions" (#6) were the client timer (#25). An idle server-side timeout (no polling) is still unmeasured. | `session.ended` with no `app_logged_out` before it | Guarded re-login | Long laptop sleeps (#30) are the case that would measure it. |
 | 22 | **seen:** `/overview` calls `queryFreeUnit` only once per page load (and not at all right after login), so later visits return nothing | `quota.route_no_call` | Primary route is now `/accountoverview`, which re-fetches every visit (~10 calls, <1 s). Same route → hop via `/usage`. Miss → one full reload (`quota.reload_used`). After login, wait for networkidle + 3 s. | If `quota.reload_used` shows up often, the hop stopped working. |
 | 23 | Captcha frequency unknown (0 captchas in 3 logins after the fingerprint fix) | `login.captcha_shown` + ledger | Human in the loop | If frequent: local OCR with a confidence gate, max 1 machine guess per login (wrong answers count toward lockout), then fall back to a human. |

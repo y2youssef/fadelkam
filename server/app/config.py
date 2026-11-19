@@ -50,6 +50,14 @@ class Settings:
     # The SPA logs itself out 15 min after a document load (client-side timer). Reload before that.
     # 11 min + one poll interval (<=3 min) stays under 15.
     doc_max_age_s: int = 11 * 60
+    # Latest document age the poller may sleep to while a portal page is open, whatever the
+    # backoff says (a 10 min "broken" wait after an 11 min old document = logged out at 15).
+    # The 2 min left before the 15 min mark leave room for a slow reload (one took ~35 s on 2026-11-19).
+    keepalive_deadline_s: int = 13 * 60
+    # Consecutive "route didn't call queryFreeUnit" misses tolerated as a slow network before
+    # calling it a portal change. 2026-11-19 00:39: a reload took ~35 s while the network was
+    # failing, and the call came 4 s after the timeout.
+    quota_miss_escalate: int = 3
     poll_interval_s: int = 180
 
     # ---- login guard (protects the account from lockouts) ----

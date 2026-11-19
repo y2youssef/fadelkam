@@ -71,6 +71,7 @@ class WeClient:
         self.antidebug_hits = 0
         self._doc_loaded_at: float | None = None
         self._saved_cookies: str | None = None
+        self._quota_miss_streak = 0
         REDACT.add(creds.password, "password")
         REDACT.add(creds.phone, "phone", keep_last=3)
 
@@ -236,7 +237,10 @@ class WeClient:
         storage = False
         if cookie:
             if not self.page.url.startswith(self.s.base_url):
-                await self.page.goto(self.s.base_url, wait_until="domcontentloaded")
+                try:  # e.g. sitting on chrome-error:// after an outage
+                    await self.page.goto(self.s.base_url, wait_until="domcontentloaded")
+                except PlaywrightError as e:  # 2026-11-19 00:50: DNS down escaped as "unexpected"
+                    raise TransientError(f"navigation failed: {str(e)[:200]}") from e
             for _ in range(3):  # a restored tab may still be navigating -> "execution context destroyed"
                 try:
                     storage = await self.page.evaluate(
@@ -549,7 +553,30 @@ class WeClient:
     def doc_age_s(self) -> float:
         return time.monotonic() - self._doc_loaded_at if self._doc_loaded_at else 0.0
 
+    def portal_doc_live(self) -> bool:
+        """A logged-in portal document is open, so its 15 min logout timer is running."""
+        url = self.page.url if self.page else ""
+        return url.startswith(self.s.base_url) and not self._on_login_page()
+
     async def fetch_quota_raw(self) -> dict[str, Any]:
+        """queryFreeUnit, with misses on a slow network reported as transient.
+
+        A miss is PortalChanged (needs a code fix, long backoff) only after quota_miss_escalate
+        misses in a row; before that it's TransientError, so the poller retries in about a minute."""
+        try:
+            body = await self._fetch_quota_once()
+        except PortalChanged as e:
+            self._quota_miss_streak += 1
+            n, limit = self._quota_miss_streak, self.s.quota_miss_escalate
+            if n >= limit:
+                raise
+            event(log, logging.WARNING, "quota.miss_as_transient", streak=n, escalate_at=limit, error=str(e))
+            raise TransientError(f"{e} [miss {n}/{limit}: slow network or portal change]",
+                                 incident=e.incident) from e
+        self._quota_miss_streak = 0
+        return body
+
+    async def _fetch_quota_once(self) -> dict[str, Any]:
         """queryFreeUnit via a route visit; if the app doesn't call it, one full reload.
 
         Keepalive: the SPA runs a client-side timer that calls logOutForUser 15 min after the
@@ -575,7 +602,9 @@ class WeClient:
         """Open an SPA route and return the JSON of the `endpoint` call the app makes there."""
         page = self.page
         url = self.s.route_url(route)
-        timeout_ms = timeout_ms or self.s.api_timeout_ms
+        # A reload has to load the whole document before the app can call anything.
+        timeout_ms = timeout_ms or (max(self.s.api_timeout_ms, self.s.nav_timeout_ms) if force_reload
+                                    else self.s.api_timeout_ms)
         try:
             if page.url == url and not force_reload:  # same route = no re-mount = no call; hop away first
                 await page.goto(self.s.route_url(self.s.refresh_hop_route), wait_until="domcontentloaded")

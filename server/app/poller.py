@@ -130,11 +130,30 @@ class Poller:
             self._set_status("error", error=f"{type(e).__name__}: {e}")
             return 300
 
+    def _keepalive_cap(self, delay: float) -> float:
+        """While a logged-in portal page is open, its SPA logs out (server-side too) 15 min after
+        the document loaded (FAILURE_MODES #25). Never sleep past keepalive_deadline_s of document
+        age, so the next tick does the keepalive reload, even in the middle of a backoff."""
+        try:
+            if not self.client.portal_doc_live():
+                return delay
+            age = self.client.doc_age_s()
+        except Exception:  # no page yet / browser gone: nothing to keep alive
+            return delay
+        cap = max(30.0, self.s.keepalive_deadline_s - age)
+        if delay <= cap:
+            return delay
+        level = logging.DEBUG if self.status.get("state") == "ok" else logging.INFO
+        event(log, level, "poller.sleep_capped", wanted_s=round(delay), capped_s=round(cap), doc_age_s=round(age),
+              state=self.status.get("state"))
+        return cap
+
     async def run_forever(self) -> None:
         event(log, logging.INFO, "poller.start", interval_s=self.s.poll_interval_s, route=self.s.quota_route)
         while True:
             delay = await self.tick()
             delay *= random.uniform(0.9, 1.1)  # jitter: don't look like a metronome
+            delay = self._keepalive_cap(delay)
             event(log, logging.DEBUG, "poller.sleep", seconds=round(delay))
             try:  # a forced refresh (POST /refresh) wakes us early; the guard still gates logins
                 await asyncio.wait_for(self.wake.wait(), timeout=delay)
