@@ -1,5 +1,8 @@
 # secrets — never commit
 creds.txt
+*service-account*.json
+google-services.json
+firebase-debug.log
 *.env
 .env*
 server/state/

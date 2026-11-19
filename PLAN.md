@@ -5,7 +5,7 @@ self-service portal (`https://my.te.eg/echannel/`), poll it every ~3 minutes, an
 the remaining amount in a **persistent ("sticky") notification on an Android phone** that
 updates in place.
 
-_Last updated: 2026-11-18_
+_Last updated: 2026-11-19_
 
 ---
 
@@ -13,10 +13,10 @@ _Last updated: 2026-11-18_
 
 | Topic | Decision |
 |---|---|
-| **Where it runs** | Always-on **server/VPS** does the scraping |
-| **Packaging** | **Portable Docker** image (runs on any Linux VPS / Raspberry Pi / NAS) |
+| **Where it runs** | The owner's **Linux laptop (CachyOS)** on home Wi-Fi does the scraping. Changed 2026-11-19: WE may flag non-Egyptian or datacenter IPs, and the session lives 16 h+ on a residential IP |
+| **Packaging** | Plain venv on the laptop. Docker image later, optional (e.g. a home Pi) |
 | **Phone side** | **Thin custom Android APK** (not ntfy app / MacroDroid) — gives a true in-place sticky notification |
-| **Push transport** | Server → phone over **SSE** (Server-Sent Events). No Firebase/FCM dependency |
+| **Push transport** | **Firebase** (changed 2026-11-19, replacing SSE + tunnel). The laptop writes to Realtime Database and sends FCM; the phone reads live while awake and is woken by FCM when asleep. Only outbound HTTPS from the laptop: no tunnel, no router, no domain. Compared against Tailscale (needs an always-on phone VPN) and Cloudflare Worker + D1 (can't wake a sleeping phone without adding FCM anyway). The local SSE API stays for development |
 | **Login automation** | **Fully automatic headless** login via real browser (Playwright). WE "sometimes asks SMS/captcha" → build a human-in-the-loop fallback |
 | **Robustness** | **Robust from the start**: token refresh, retries/backoff, logging, graceful captcha/SMS handling |
 | **APK delivery** | Set up the Android toolchain **on this PC** and build a ready-to-sideload debug APK |
@@ -71,30 +71,27 @@ _Last updated: 2026-11-18_
 ## 3. Architecture
 
 ```
-┌─────────────────────────── VPS (Docker) ───────────────────────────┐
-│                                                                     │
-│  Playwright/Chrome (persistent profile) ──login──▶ my.te.eg         │
-│        │ (guarded: caps, lockout & captcha handling)                │
-│        ▼                                                            │
-│  Poller (every 3 min) ──▶ open SPA route; the app makes the signed  │
-│        │                  queryFreeUnit call; we capture its JSON   │
-│        │                                                            │
-│        ▼                                                            │
-│  State store (latest value) ──▶ FastAPI:                            │
-│        • GET /quota        (current value, for app launch/reconnect)│
-│        • GET /events       (SSE stream, pushes updates)             │
-│        • POST /challenge   (submit SMS/captcha code when prompted)  │
-│        • (push alert when a challenge is needed)                    │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │ SSE over HTTPS
-                               ▼
-┌──────────────── Samsung phone (Android 15 / One UI 7) ──────────────┐
-│  Thin APK:                                                          │
-│   • Foreground service holds SSE connection (auto-reconnect+backoff)│
-│   • ONE ongoing/sticky notification, updated in place               │
-│   • Settings: server URL + access token                             │
-│   • Requests battery-optimization exemption (One UI 7)              │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────── Laptop (CachyOS, home Wi-Fi, Egyptian IP) ────────────────────┐
+│  Playwright/Chrome (persistent profile) ──guarded login──▶ my.te.eg               │
+│        ▼                                                                          │
+│  Poller (90–180 s; keepalive reload before the SPA's 15 min logout)               │
+│        ▼                                                                          │
+│  Hub (latest reading, status, pending captcha) ──▶ local API + SSE (development)  │
+│        ▼                                                                          │
+│  CloudPublisher ──HTTPS──▶ Realtime Database  /state  /challenge                  │
+│        │       ──HTTPS──▶ FCM (captcha = high priority, trouble, reading changed) │
+│        ◀──stream── /inbox/<phone>/{answer, refresh, hello}                        │
+└───────────────────────────────────────────────────────────────────────────────────┘
+                              │ Firebase (free Spark plan)
+                              ▼
+┌──────────────── Samsung phone (Android 15 / One UI 7) ─────────────────┐
+│  Thin APK:                                                             │
+│   • Pairing: anonymous sign-in, shows a 6-digit code, laptop approves  │
+│   • ONE ongoing/sticky notification, updated in place                  │
+│   • Live /state listener while the screen is on; FCM wakes it when not │
+│   • Captcha: notification with the image → reply → /inbox/<uid>/answer│
+│   • "Updated N min ago" / "laptop offline" from the heartbeat          │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -135,19 +132,36 @@ _Last updated: 2026-11-18_
 - [x] Challenge workflow: when login needs SMS/captcha, mark state `challenge_pending`,
   push an SSE alert ("enter SMS code"); app (or a web form) POSTs the code to `/challenge`.
 
+### 4.2b Server: cloud relay (`server/app/cloud.py`)
+- [x] Service-account JWT → OAuth token (RTDB + FCM scopes), no Google SDK (httpx + cryptography,
+  which work on Py 3.15).
+- [x] Whitelisted `/state` written on change + 5 min heartbeat; `/challenge` with the captcha image;
+  `stopped` written on a clean shutdown.
+- [x] FCM HTTP v1: captcha (high), needs-human/login-failed (high), broken/error and the all-clear
+  (normal), reading changed (normal, at most every 2 min). Dead tokens dropped.
+- [x] `/inbox` stream: captcha answers (≤15 min old), refresh requests, hello.
+- [x] Security rules (`firebase/database.rules.json`): deny by default, phone scoped to its own uid
+  once paired. CLI: `check`, `deploy-rules`, `pair`, `devices`, `revoke`, `test-push`.
+- [x] 20 offline tests against a fake Firebase (signature check, whitelist, retries, captcha round trip).
+- [ ] Owner creates the Firebase project (server/README.md, "Cloud"); first live `cloud check`.
+
 ### 4.3 Packaging (`server/`)
 - [ ] `Dockerfile` based on `mcr.microsoft.com/playwright/python:vX.Y` (pinned, Chromium preinstalled).
 - [ ] `docker-compose.yml` (env for creds, volume for `state/`, port map).
 - [ ] `.env.example`, `requirements.txt` (pinned).
 
-### 4.4 Android app (`android/`)
-- [ ] Kotlin project, minSdk 26, targetSdk 35 (Android 15).
-- [ ] Foreground service (type `dataSync`/`specialUse`) holding an SSE client (OkHttp-EventSource).
-- [ ] Single ongoing notification, updated in place (same notification ID).
-- [ ] Settings screen: server URL + token (stored in encrypted prefs).
-- [ ] Reconnect with backoff; show "stale/disconnected" state in the notification.
+### 4.4 Android app (`android/`, package `com.fadelkam.wequota`)
+- [ ] Kotlin project, minSdk 26, targetSdk 35 (Android 15). Firebase BoM: Auth, Realtime Database, Messaging.
+- [ ] Pairing screen: anonymous sign-in → write `/pairing/<uid>` with a 6-digit code → wait for `/allowed/<uid>`.
+- [ ] Register the FCM token at `/devices/<uid>` (and on `onNewToken`); write `/inbox/<uid>/hello`.
+- [ ] Single ongoing notification, updated in place: remaining / total, "updated N min ago",
+  greyed out when the heartbeat is older than ~2.5 × `heartbeat_s`, "server stopped" on `stopped`.
+- [ ] `/state` listener only while the screen is on (saves data); FCM data messages update the
+  notification when it's off.
+- [ ] Captcha: high-priority notification with the image (from `/challenge`) and a reply action →
+  `/inbox/<uid>/answer` with `ServerValue.TIMESTAMP`.
+- [ ] Refresh action → `/inbox/<uid>/refresh`.
 - [ ] Runtime `POST_NOTIFICATIONS` permission (Android 13+); battery-optimization exemption prompt (One UI 7).
-- [ ] Optional: tap notification → open portal / app; action button to force-refresh.
 
 ---
 
@@ -162,8 +176,8 @@ _Last updated: 2026-11-18_
   the login ledger now records every session's lifetime. Possible single-active-session policy (unconfirmed).
 - **Service number starts with 010** (not WE-native 015) — must be a line ported to WE; confirm the
   portal shows its mobile data bundle.
-- **Server reachability from phone:** VPS with public IP/domain = simplest. Home Pi needs
-  port-forward or a tunnel (Tailscale/Cloudflare Tunnel).
+- **Server reachability from phone:** solved by the Firebase relay (2026-11-19). The laptop only
+  makes outbound calls, and the phone never connects to the laptop.
 - **F5/WAF may flag datacenter IPs** or a repeated pattern; 3-min cadence should be fine but monitor.
 
 ---
@@ -189,23 +203,22 @@ _Last updated: 2026-11-18_
 ---
 
 ## 8. Build phases (execution order)
-1. **De-risk login (highest priority).** One real Playwright login → capture `queryFreeUnit`
-   JSON → confirm we can read remaining mobile data. Decides everything downstream.
-2. **Scraper + poller** hardened (token reuse, re-login, backoff).
-3. **FastAPI + SSE + challenge** endpoint.
-4. **Dockerfile + compose**; deploy to VPS; confirm reachable over HTTPS.
-5. **Android toolchain setup** on this PC.
-6. **Thin APK**: foreground service + SSE + sticky notification + settings.
-7. **End-to-end test** on the Samsung phone; tune One UI 7 battery settings.
-8. **Hardening/monitoring**: logs, health check, alerting on repeated login failure.
+1. ~~De-risk login~~: done 2026-11-18.
+2. ~~Scraper + poller hardened~~: done; one session has lasted 16 h+.
+3. ~~Local API + SSE + captcha relay~~: done (now for development).
+4. ~~Cloud relay (Firebase)~~: code done 2026-11-19; waiting for the owner's Firebase project.
+5. **Move to the laptop** (CachyOS): clone, venv, creds, Firebase key; stop this PC's server first.
+6. **Android toolchain** on the laptop (JDK 17, Android SDK platform 35, Gradle).
+7. **Thin APK** (4.4): pairing, FCM, sticky notification, captcha reply.
+8. **End-to-end test** on the Samsung phone; tune One UI 7 battery settings.
+9. Later, optional: Docker image; OCR captcha with a confidence gate if captchas turn out frequent.
 
 ---
 
 ## 9. Immediate next steps
-- [x] Confirm `creds.txt` format (`phone:` / `password:` lines; loader handles both formats).
-- [x] Password confirmed working by the owner (manual login, 2026-11-18).
-- [ ] Run `python -m app.probe login --chrome` (owner present for a possible captcha) → captures
-      the post-login flow, the token key, and which route calls `queryFreeUnit`.
-- [ ] Measure session lifetime (`probe session` at intervals) and test the single-session theory.
-- [ ] Decide server dev approach: install Docker Desktop here **or** develop/test directly on the VPS.
-- [ ] Confirm VPS details (public domain/IP, OS) for deployment + phone reachability.
+- [ ] Owner: create the Firebase project (5 console steps in `server/README.md`, "Cloud"), put the
+      key in `server/state/`, run `python -m app.cloud deploy-rules` and `check`.
+- [ ] Stop the server on the old PC **at least 10 min** before the laptop's first login (two machines
+      logging in close together → "max attempts" lockout). Expect a captcha on the laptop's first
+      login: it's a new device to WE.
+- [ ] Android toolchain on the laptop, then the APK.

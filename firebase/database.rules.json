@@ -1,0 +1,60 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "state": {
+      ".read": "auth != null && root.child('allowed').child(auth.uid).exists()"
+    },
+    "challenge": {
+      ".read": "auth != null && root.child('allowed').child(auth.uid).exists()"
+    },
+    "allowed": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid"
+      }
+    },
+    "pairing": {
+      "$uid": {
+        ".write": "auth != null && auth.uid === $uid && !root.child('allowed').child($uid).exists()",
+        ".validate": "newData.hasChildren(['code', 'at'])",
+        "code": { ".validate": "newData.isString() && newData.val().length === 6 && newData.val().matches(/^[0-9]+$/)" },
+        "at": { ".validate": "newData.val() === now" },
+        "model": { ".validate": "newData.isString() && newData.val().length <= 64" },
+        "$other": { ".validate": false }
+      }
+    },
+    "devices": {
+      "$uid": {
+        ".write": "auth != null && auth.uid === $uid && root.child('allowed').child($uid).exists()",
+        ".validate": "newData.hasChildren(['fcm', 'at'])",
+        "fcm": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 512" },
+        "at": { ".validate": "newData.val() === now" },
+        "model": { ".validate": "newData.isString() && newData.val().length <= 64" },
+        "$other": { ".validate": false }
+      }
+    },
+    "inbox": {
+      "$uid": {
+        ".write": "auth != null && auth.uid === $uid && root.child('allowed').child($uid).exists()",
+        "answer": {
+          ".validate": "newData.hasChildren(['id', 'code', 'at'])",
+          "id": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 32" },
+          "code": { ".validate": "newData.isString() && newData.val().length >= 3 && newData.val().length <= 12 && newData.val().matches(/^[A-Za-z0-9]+$/)" },
+          "at": { ".validate": "newData.val() === now" },
+          "$other": { ".validate": false }
+        },
+        "refresh": {
+          ".validate": "newData.hasChildren(['at'])",
+          "at": { ".validate": "newData.val() === now" },
+          "$other": { ".validate": false }
+        },
+        "hello": {
+          ".validate": "newData.hasChildren(['at'])",
+          "at": { ".validate": "newData.val() === now" },
+          "$other": { ".validate": false }
+        },
+        "$other": { ".validate": false }
+      }
+    }
+  }
+}

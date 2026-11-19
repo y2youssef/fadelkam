@@ -13,7 +13,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import Settings
 from .logs import event, get_logger, iso, utcnow
@@ -37,6 +37,8 @@ class Hub:
         self._seq = 0
         self.refresh_event = asyncio.Event()
         self._last_forced = 0.0
+        self._listeners: list[Callable[[str], None]] = []
+        self.cloud: dict[str, Any] | None = None  # CloudPublisher health, shown on /healthz
 
     # ------------------------------------------------------------------ snapshot
     def _load_last_quota(self) -> dict[str, Any] | None:
@@ -78,6 +80,10 @@ class Hub:
         self._subs.discard(q)
         event(log, logging.INFO, "sse.unsubscribed", subscribers=len(self._subs))
 
+    def add_listener(self, fn: Callable[[str], None]) -> None:
+        """In-process listener (the cloud publisher). Called with the event kind; must not block."""
+        self._listeners.append(fn)
+
     def publish(self, kind: str) -> None:
         self._seq += 1
         msg = (self._seq, kind, self.snapshot())
@@ -88,6 +94,11 @@ class Hub:
                 except asyncio.QueueEmpty:
                     pass
             q.put_nowait(msg)
+        for fn in self._listeners:
+            try:
+                fn(kind)
+            except Exception:  # a broken listener must never break the poller
+                event(log, logging.ERROR, "hub.listener_failed", kind=kind, exc_info=True)
 
     # ------------------------------------------------------------------ poller callbacks
     async def on_quota(self, quota: Quota) -> None:

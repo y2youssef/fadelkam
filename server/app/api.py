@@ -53,7 +53,8 @@ def create_app(settings: Settings, hub: Hub, token: str, *, heartbeat_s: float =
 
     async def healthz(request: Request) -> Response:
         return JSONResponse({"ok": True, "state": hub.status.get("state"), "last_reading_age_s": hub.age_s(),
-                             "challenge_pending": hub.challenge is not None})
+                             "challenge_pending": hub.challenge is not None,
+                             "cloud": (hub.cloud or {}).get("state", "off")})
 
     async def quota(request: Request) -> Response:
         if not authorized(request):

@@ -2,10 +2,11 @@
 
     python -m app.server [--chrome] [--headed] [--host 127.0.0.1] [--port 8080]
 
-The API token comes from WE_API_TOKEN, or is generated once into state/api_token (read it
-from there to set up the phone). The token value is never logged.
-Bind defaults to 127.0.0.1: reach it through a tunnel (cloudflared / Tailscale) and never
-expose it raw. Set WE_API_HOST=0.0.0.0 inside Docker.
+The phone normally reads from Firebase (app/cloud.py): it starts automatically when
+state/firebase-service-account.json exists. The local HTTP API is for development on the same
+network. Its token comes from WE_API_TOKEN, or is generated once into state/api_token, and the
+value is never logged. Bind defaults to 127.0.0.1; never expose it raw. Set WE_API_HOST=0.0.0.0
+for a phone on the same Wi-Fi, or inside Docker.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from dataclasses import replace
 import uvicorn
 
 from .api import create_app
+from .cloud import CloudConfigError, CloudPublisher, load_cloud_config
 from .config import Settings, load_credentials, load_settings
 from .hub import Hub
 from .login_guard import LoginGuard
@@ -70,6 +72,11 @@ async def main_async(argv: list[str]) -> int:
     for w in creds.warnings():
         event(log, logging.WARNING, "creds.warning", warning=w)
 
+    try:  # a half-configured relay fails here, loudly, instead of leaving the phone silent
+        cloud_cfg = load_cloud_config(s)
+    except CloudConfigError as e:
+        raise SystemExit(f"cloud: {e}")
+
     hub = Hub(s)
     app = create_app(s, hub, token)
     server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port, log_config=None,
@@ -77,14 +84,19 @@ async def main_async(argv: list[str]) -> int:
     async with WeClient(s, creds, LoginGuard(s, creds.fingerprint)) as client:
         poller = Poller(s, client, code_provider=hub.code_provider, on_update=hub.on_quota,
                         on_status=hub.on_status, wake=hub.refresh_event)
-        task = asyncio.create_task(poller.run_forever(), name="poller")
-        event(log, logging.INFO, "server.start", host=args.host, port=args.port)
+        tasks = [asyncio.create_task(poller.run_forever(), name="poller")]
+        cloud = CloudPublisher(s, hub, cloud_cfg) if cloud_cfg else None
+        if cloud:
+            tasks.append(asyncio.create_task(cloud.run(), name="cloud"))
+        event(log, logging.INFO, "server.start", host=args.host, port=args.port, cloud=bool(cloud))
         try:
             await server.serve()  # returns on SIGINT/SIGTERM
         finally:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if cloud:
+                await cloud.close("stopped")  # the phone shows "server stopped", not "laptop silent"
             event(log, logging.INFO, "server.stop")
     return 0
 
