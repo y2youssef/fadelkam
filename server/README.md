@@ -13,7 +13,8 @@ python -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 playwright install chromium      # bundled Chromium (not officially supported on Arch,
                                  # usually works); or install google-chrome and pass --chrome
-printf 'phone: 01XXXXXXXXX\npassword: ...\n' > ../creds.txt   # git-ignored
+$EDITOR ../creds.txt && chmod 600 ../creds.txt   # two lines: "phone: 01…" and "password: …"
+                                 # (an editor, not echo/printf: those leave the password in shell history)
 pytest -q                        # offline tests, no network
 ```
 
