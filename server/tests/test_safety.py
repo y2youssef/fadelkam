@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from dataclasses import replace
 from datetime import timedelta
 
@@ -10,8 +12,11 @@ import pytest
 from app.config import Credentials, Settings, _parse_creds_text
 from app.errors import (AccountLocked, ChallengeRequired, LoginBlockedByGuard, LoginRejected,
                         classify_login_failure, parse_lock_minutes)
+from app.files import write_private
+from app.hub import CODE_RE, code_file, take_code_file
 from app.login_guard import LoginGuard
 from app.logs import Redactor, utcnow
+from app.we_client import WeClient
 
 
 # ---------------------------------------------------------------- credentials
@@ -177,3 +182,65 @@ def test_redactor_phone_variants_and_password():
     out = r('{"msisdn":"201012345678","id":"1012345678","x":"01012345678","p":"s3cret#pass"}')
     assert "1012345678" not in out and "s3cret" not in out
     assert "<phone…678>" in out and "<password>" in out
+
+
+# ---------------------------------------------------------------- private state files
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_write_private_is_owner_only_and_atomic(tmp_path):
+    path = tmp_path / "new_dir" / "login_ledger.json"
+    write_private(path, '{"a": 1}')
+    assert json.loads(path.read_text()) == {"a": 1}
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    path.chmod(0o644)                              # e.g. written by an older version
+    (path.parent / (path.name + ".tmp")).write_text("left by a crash")
+    (path.parent / (path.name + ".tmp")).chmod(0o644)
+    write_private(path, '{"a": 2}')
+    assert json.loads(path.read_text()) == {"a": 2}
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert [p.name for p in path.parent.iterdir()] == ["login_ledger.json"]
+
+
+def test_guard_ledger_and_incidents_are_private(settings):
+    g = LoginGuard(settings, "fp")
+    g.end_attempt(g.begin_attempt(), "success")
+    if os.name == "posix":
+        assert stat.S_IMODE(settings.ledger_path.stat().st_mode) == 0o600
+
+
+def test_code_file_rules(tmp_path):
+    path = code_file(tmp_path)
+    assert take_code_file(path) is None            # nothing written yet: keep waiting
+    path.parent.mkdir(parents=True)
+    path.write_text(" mrWw4 \n")
+    assert take_code_file(path) == "mrWw4" and not path.exists()
+    path.write_text("\n")
+    assert take_code_file(path) == ""              # empty = the operator gives up
+    assert CODE_RE.match("mrWw4") and not CODE_RE.match("12") and not CODE_RE.match("a b c")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="flock")
+def test_one_client_per_state_dir(settings):
+    """A probe started next to the running server must refuse, not open a second browser on the
+    same profile with its own copy of the login ledger."""
+    creds = Credentials("01512345678", "pw-for-tests")
+    a = WeClient(settings, creds, LoginGuard(settings, creds.fingerprint))
+    b = WeClient(settings, creds, LoginGuard(settings, creds.fingerprint))
+    a._take_instance_lock()
+    with pytest.raises(SystemExit, match=f"pid {os.getpid()}"):
+        b._take_instance_lock()
+    a._release_instance_lock()
+    b._take_instance_lock()                        # free again once the first one has closed
+    b._release_instance_lock()
+
+
+@pytest.mark.parametrize("text", [
+    "phone: 01512345678\npasword: s3cret value",
+    "phone: 01512345678\nPassowrd: s3cret",
+    "pass word: s3cret\n01512345678",
+])
+def test_creds_misspelt_label_refused(text):
+    """Seen 2026-11-19: a misspelt label made the whole line the password and WE refused the login."""
+    with pytest.raises(ValueError, match=r"creds line \d") as e:
+        _parse_creds_text(text)
+    assert "s3cret" not in str(e.value) and "pas" not in str(e.value).split("label")[0]

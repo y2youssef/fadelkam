@@ -12,18 +12,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import logging
 import os
 import secrets
 import sys
-from dataclasses import replace
 
 import uvicorn
 
 from .api import create_app
 from .cloud import CloudConfigError, CloudPublisher, load_cloud_config
-from .config import Settings, load_credentials, load_settings
+from .config import Settings, add_browser_flags, apply_browser_flags, load_credentials, load_settings
+from .files import write_private
 from .hub import Hub
 from .login_guard import LoginGuard
 from .logs import REDACT, event, get_logger, setup_logging
@@ -41,10 +40,7 @@ def ensure_token(s: Settings) -> str:
             token = path.read_text(encoding="utf-8").strip()
         else:
             token = secrets.token_urlsafe(32)
-            s.state_dir.mkdir(parents=True, exist_ok=True)
-            path.write_text(token + "\n", encoding="utf-8")
-            with contextlib.suppress(OSError):
-                os.chmod(path, 0o600)
+            write_private(path, token + "\n")
             event(log, logging.WARNING, "api.token_generated", path=str(path),
                   hint="copy this token into the phone app")
     if len(token) < 24:
@@ -55,17 +51,12 @@ def ensure_token(s: Settings) -> str:
 
 async def main_async(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="python -m app.server")
-    ap.add_argument("--chrome", action="store_true", help="use the installed Google Chrome")
-    ap.add_argument("--headed", action="store_true", help="show the browser window")
+    add_browser_flags(ap)
     ap.add_argument("--host", default=os.environ.get("WE_API_HOST", "127.0.0.1"))
     ap.add_argument("--port", type=int, default=int(os.environ.get("WE_API_PORT", "8080")))
     args = ap.parse_args(argv)
 
-    s = load_settings()
-    if args.chrome:
-        s = replace(s, browser_channel="chrome")
-    if args.headed:
-        s = replace(s, headless=False)
+    s = apply_browser_flags(load_settings(), args)
     setup_logging(s.logs_dir, s.log_level)
     token = ensure_token(s)
     creds = load_credentials()

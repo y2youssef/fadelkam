@@ -20,6 +20,11 @@ import random
 import re
 import time
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
 from typing import Any, Awaitable, Callable
 
 from playwright.async_api import Error as PlaywrightError
@@ -30,6 +35,7 @@ from .config import Credentials, Settings
 from .diagnostics import ApiRecorder, save_incident
 from .errors import (AccountLocked, ApiError, ChallengeRequired, PortalChanged, SessionExpired, TransientError,
                      WafBlocked, WeError, classify_login_failure)
+from .files import write_private
 from .logs import REDACT, event, get_logger
 from .login_guard import LoginGuard
 
@@ -73,6 +79,7 @@ class WeClient:
         self._saved_cookies: str | None = None
         self._quota_miss_streak = 0
         self._had_session = False  # seen logged in by this process since the last loss
+        self._instance_lock = None
         REDACT.add(creds.password, "password")
         REDACT.add(creds.phone, "phone", keep_last=3)
 
@@ -89,7 +96,36 @@ class WeClient:
             event(log, logging.INFO, "browser.extra_tabs_closed", count=len(pages) - 1)
         return keep
 
+    def _take_instance_lock(self) -> None:
+        """One WeClient per state folder (server, poller or probe). Two would share the browser
+        profile (start() even clears Chrome's profile lock) and each keep its own in-memory copy
+        of the login ledger, so the min gap between logins would not hold across them.
+        The OS drops the lock when the process dies, so a crash never leaves it stuck."""
+        if fcntl is None:  # Windows: not enforced
+            return
+        self.s.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        f = open(self.s.state_dir / "instance.lock", "a+", encoding="utf-8")
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            f.seek(0)
+            holder = f.read().strip() or "?"
+            f.close()
+            event(log, logging.ERROR, "client.already_running", holder_pid=holder)
+            raise SystemExit(f"another server/poller/probe (pid {holder}) is using {self.s.state_dir}. "
+                             "Stop it first (systemctl --user stop we-quota).") from None
+        f.truncate(0)
+        f.write(f"{os.getpid()}\n")
+        f.flush()
+        self._instance_lock = f
+
+    def _release_instance_lock(self) -> None:
+        if self._instance_lock:
+            self._instance_lock.close()
+            self._instance_lock = None
+
     async def start(self) -> None:
+        self._take_instance_lock()
         self.s.profile_dir.mkdir(parents=True, exist_ok=True)
         self._pw = await async_playwright().start()
         ua = await self._clean_user_agent()
@@ -161,8 +197,7 @@ class WeClient:
 
     async def save_session_cookies(self) -> None:
         """Backstop for --restore-last-session (proven only after hard kills, and it lost a
-        20-s-old cookie). The file holds a live session token: state/ is private, and the file
-        is chmod 600 where supported."""
+        20-s-old cookie). The file holds a live session token, so it is owner-only (0600)."""
         if not self.ctx:
             return
         try:
@@ -177,13 +212,7 @@ class WeClient:
         text = json.dumps(cookies)
         if text == self._saved_cookies:
             return
-        tmp = self._cookie_file.with_suffix(".tmp")
-        tmp.write_text(text, encoding="utf-8")
-        try:
-            os.chmod(tmp, 0o600)
-        except OSError:
-            pass
-        os.replace(tmp, self._cookie_file)
+        write_private(self._cookie_file, text)
         self._saved_cookies = text
 
     async def _restore_session_cookies(self) -> bool:
@@ -212,6 +241,7 @@ class WeClient:
                     await closer()
                 except Exception:
                     pass
+        self._release_instance_lock()
         event(log, logging.INFO, "browser.closed")
 
     async def __aenter__(self) -> "WeClient":

@@ -93,6 +93,9 @@ KNOWN_LOGIN_ERRORS: dict[str, str] = {
     "60301025072100002": "account_locked",
     # unconfirmed: sibling of the above in CAPTCHA_INVALID_ERROR.
     "60301025072100001": "login_rejected",
+    # live 2026-11-19 (retCode 9999, errorMsg empty): the app's toast said "Service number or
+    # password is incorrect". Cause: a misspelt label in creds.txt sent the wrong password.
+    "60301023110815001": "login_rejected",
 }
 
 _WORDNUM = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "ten": 10, "fifteen": 15,

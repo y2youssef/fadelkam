@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
+from .files import write_private
 from .logs import REDACT, event, get_logger, iso, utcnow
 
 log = get_logger("portal")
@@ -119,13 +120,11 @@ class ApiRecorder:
             if prev:
                 event(log, logging.WARNING, "portal.frontend_changed", old=prev, new=name,
                       hint="WE deployed a new web build; if login/quota now fails, re-run the probe")
-            self._version_file.parent.mkdir(parents=True, exist_ok=True)
-            self._version_file.write_text(json.dumps({"main": name, "first_seen": iso(), "previous": prev}),
-                                          encoding="utf-8")
+            write_private(self._version_file, json.dumps({"main": name, "first_seen": iso(), "previous": prev}))
 
 
 def _write(path: Path, text: str) -> None:
-    path.write_text(REDACT(text), encoding="utf-8")
+    write_private(path, REDACT(text))
 
 
 async def save_incident(settings: Settings, kind: str, *, page=None, recorder: ApiRecorder | None = None,
@@ -133,7 +132,7 @@ async def save_incident(settings: Settings, kind: str, *, page=None, recorder: A
     """Dump everything useful for a post-mortem. Never raises."""
     d = settings.incidents_dir / f"{utcnow():%Y%m%dT%H%M%SZ}_{kind}"
     try:
-        d.mkdir(parents=True, exist_ok=True)
+        d.mkdir(mode=0o700, parents=True, exist_ok=True)  # screenshots show the phone number
         meta: dict[str, Any] = {"kind": kind, "ts": iso(), "extra": extra or {}}
         if error is not None:
             meta["error"] = {"type": type(error).__name__, "message": str(error),

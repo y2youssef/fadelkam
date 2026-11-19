@@ -6,9 +6,11 @@ password field is excluded from repr and both values are registered with the log
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import os
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 SERVER_DIR = Path(__file__).resolve().parent.parent
@@ -126,6 +128,21 @@ def load_settings() -> Settings:
     )
 
 
+def add_browser_flags(ap: argparse.ArgumentParser, *, headed: bool = True) -> None:
+    ap.add_argument("--chrome", action="store_true", help="use the installed Google Chrome")
+    if headed:
+        ap.add_argument("--headed", action="store_true", help="show the browser window")
+
+
+def apply_browser_flags(s: Settings, args: argparse.Namespace) -> Settings:
+    """--chrome / --headed (see add_browser_flags) on top of the env settings."""
+    if getattr(args, "chrome", False):
+        s = replace(s, browser_channel="chrome")
+    if getattr(args, "headed", False):
+        s = replace(s, headless=False)
+    return s
+
+
 # --------------------------------------------------------------------------- credentials
 
 _PHONE_KEYS = {"phone", "number", "service", "service_number", "msisdn", "user", "username", "login"}
@@ -152,17 +169,26 @@ class Credentials:
         return out
 
 
+_LABEL_RE = re.compile(r"^[A-Za-z][A-Za-z _]*$")
+
+
 def _parse_creds_text(text: str) -> Credentials:
     lines = [ln.strip() for ln in text.lstrip("﻿").splitlines() if ln.strip()]
     phone = password = None
     raw = []
-    for ln in lines:
+    for n, ln in enumerate(lines, 1):
         key, sep, val = ln.partition(":")
         k = key.strip().lower().replace(" ", "_")
         if sep and k in _PHONE_KEYS and phone is None:
             phone = val.strip()
         elif sep and k in _PASS_KEYS and password is None:
             password = val.strip()
+        elif sep and _LABEL_RE.match(key.strip()) and val.strip():
+            # Seen 2026-11-19: a misspelt "password:" label made the whole line the password, and
+            # WE refused it (one wasted attempt toward a lockout). Refuse instead of guessing. The
+            # label isn't echoed: in the positional format it could be part of the password.
+            raise ValueError(f"creds line {n} looks like 'label: value' but the label isn't one of "
+                             f"phone/password; write it as 'password: ...' (or 'phone: ...')")
         else:
             raw.append(ln)
     if phone is None and raw:

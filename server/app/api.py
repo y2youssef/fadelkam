@@ -17,7 +17,6 @@ import asyncio
 import hmac
 import json
 import logging
-import re
 from typing import AsyncIterator
 
 from starlette.applications import Starlette
@@ -26,13 +25,12 @@ from starlette.responses import FileResponse, JSONResponse, Response, StreamingR
 from starlette.routing import Route
 
 from .config import Settings
-from .hub import Hub
+from .hub import CODE_RE, Hub
 from .logs import event, get_logger
 
 log = get_logger("api")
 
 HEARTBEAT_S = 20
-CODE_RE = re.compile(r"^[A-Za-z0-9]{3,12}$")
 
 
 def _client(request: Request) -> str:

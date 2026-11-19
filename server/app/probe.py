@@ -20,12 +20,12 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import replace
 from pathlib import Path
 
-from .config import Settings, load_credentials, load_settings
+from .config import Settings, add_browser_flags, apply_browser_flags, load_credentials, load_settings
 from .diagnostics import save_incident
 from .errors import WeError
+from .hub import code_file, take_code_file
 from .login_guard import LoginGuard
 from .logs import REDACT, event, get_logger, setup_logging
 from .we_client import SEL, WeClient
@@ -51,19 +51,18 @@ async def terminal_code_provider(kind: str, image: Path | None) -> str | None:
                 subprocess.Popen(["xdg-open", str(image)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError:
             pass
-    code_file = (image.parent if image else Path("state/challenge")) / "code.txt"
-    code_file.unlink(missing_ok=True)
+    path = code_file(load_settings().state_dir)
+    path.unlink(missing_ok=True)
     if sys.stdin and sys.stdin.isatty():
         try:
             code = await asyncio.to_thread(input, ">>> Type the code (empty = give up): ")
             return code.strip() or None
         except EOFError:  # "tty" without a keyboard (e.g. run from a tool) -> use the file
             pass
-    print(f">>> Write the code into {code_file.resolve()} (waiting up to 10 min)", flush=True)
+    print(f">>> Write the code into {path} (waiting up to 10 min)", flush=True)
     for _ in range(600):
-        if code_file.exists():
-            code = code_file.read_text(encoding="utf-8").strip()
-            code_file.unlink(missing_ok=True)
+        code = take_code_file(path)
+        if code is not None:
             return code or None
         await asyncio.sleep(1)
     return None
@@ -150,17 +149,12 @@ async def main_async(argv: list[str]) -> int:
     r = sub.add_parser("reset")
     r.add_argument("--clear-lock", action="store_true", help="also forget WE's lock time (only if you are sure)")
     lg = sub.add_parser("login")
-    lg.add_argument("--headed", action="store_true", help="show the browser window")
     lg.add_argument("--routes", default=",".join(CANDIDATE_ROUTES))
     for p in sub.choices.values():
-        p.add_argument("--chrome", action="store_true", help="use the installed Google Chrome")
+        add_browser_flags(p, headed=p is lg)
     args = ap.parse_args(argv)
 
-    s = load_settings()
-    if getattr(args, "headed", False):
-        s = replace(s, headless=False)
-    if getattr(args, "chrome", False):
-        s = replace(s, browser_channel="chrome")
+    s = apply_browser_flags(load_settings(), args)
     setup_logging(s.logs_dir, s.log_level)
     creds = load_credentials()
     REDACT.add(creds.password, "password")

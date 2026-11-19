@@ -183,7 +183,25 @@ _Last updated: 2026-11-19_
 
 ---
 
-## 6. Environment status (this PC)
+## 6. Environment status
+
+### Laptop (CachyOS), the production host since 2026-11-19
+- Repo at `~/fadelkam`. Python **3.14.10**, venv at `server/.venv`, all pinned deps install, 77/77
+  offline tests pass (`server/pytest.ini` puts `server/` on the import path so plain `pytest -q` works).
+- Google Chrome 158 at `/opt/google/chrome/chrome` → run with `--chrome` (bundled Chromium not installed).
+- `probe page` 2026-11-19 14:53 UTC: login form found, no WAF block, UA `X11; Linux x86_64`,
+  `webdriver=false`, portal build `main.b8367340062733f882fa.chunk.js`. New profile = new `deviceid`.
+- Clock: NTP active and synced, timezone Africa/Cairo.
+- `creds.txt` chmod 600, `server/state/` chmod 700. The old PC's `state/` was not carried over (its
+  Chrome profile is Windows-encrypted and useless here). Old PC stopped and the project deleted
+  there on 2026-11-19, a few minutes before 14:57 UTC.
+- Runs as the systemd user service `we-quota` (`server/systemd/we-quota.service`), enabled, with
+  linger, so it starts at boot before login. The Wi-Fi password is stored system-wide, so the network
+  is up before login too.
+- Awake: Plasma never suspends when idle and ignores the lid (AC and battery). Optional root step for
+  the login screen: `server/systemd/logind-lid-on-ac.conf`.
+
+### Old PC (Windows), retired
 - Primary dir: `D:\fadelkam` (git initialized).
 - Python **3.15.2** locally. **Playwright 1.65.2 installs and runs fine** (greenlet ships cp315
   wheels). venv at `server/.venv`. Local runs use the installed Google Chrome
@@ -208,7 +226,7 @@ _Last updated: 2026-11-19_
 2. ~~Scraper + poller hardened~~: done; one session has lasted 16 h+.
 3. ~~Local API + SSE + captcha relay~~: done (now for development).
 4. ~~Cloud relay (Firebase)~~: code done 2026-11-19; waiting for the owner's Firebase project.
-5. **Move to the laptop** (CachyOS): clone, venv, creds, Firebase key; stop this PC's server first.
+5. ~~Move to the laptop~~ (CachyOS): venv, creds, systemd service: done 2026-11-19. Firebase key pending.
 6. **Android toolchain** on the laptop (JDK 17, Android SDK platform 35, Gradle).
 7. **Thin APK** (4.4): pairing, FCM, sticky notification, captcha reply.
 8. **End-to-end test** on the Samsung phone; tune One UI 7 battery settings.
@@ -219,7 +237,7 @@ _Last updated: 2026-11-19_
 ## 9. Immediate next steps
 - [ ] Owner: create the Firebase project (5 console steps in `server/README.md`, "Cloud"), put the
       key in `server/state/`, run `python -m app.cloud deploy-rules` and `check`.
-- [ ] Stop the server on the old PC **at least 10 min** before the laptop's first login (two machines
-      logging in close together → "max attempts" lockout). Expect a captcha on the laptop's first
-      login: it's a new device to WE.
+- [x] Stop the server on the old PC **at least 10 min** before the laptop's first login (done 2026-11-19).
+- [ ] Owner, optional: install `server/systemd/logind-lid-on-ac.conf` (root) so the lid doesn't
+      suspend at the login screen while plugged in.
 - [ ] Android toolchain on the laptop, then the APK.

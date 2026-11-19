@@ -19,16 +19,15 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import random
 import sys
-from dataclasses import replace
 from typing import Awaitable, Callable
 
-from .config import Settings, load_credentials, load_settings
+from .config import Settings, add_browser_flags, apply_browser_flags, load_credentials, load_settings
 from .diagnostics import save_incident
 from .errors import (ApiError, ChallengeRequired, LoginBlockedByGuard, PortalChanged, SessionExpired,
                      TransientError, WafBlocked, WeError)
+from .files import write_private
 from .login_guard import LoginGuard
 from .logs import REDACT, event, get_logger, iso, setup_logging, utcnow
 from .quota import Quota, parse_free_units
@@ -83,11 +82,8 @@ class Poller:
         return quota
 
     def _persist(self, raw: dict, quota: Quota) -> None:
-        d = self.s.state_dir
         for name, obj in (("last_quota.json", quota.as_dict()), ("last_quota_raw.json", raw)):
-            tmp = d / (name + ".tmp")
-            tmp.write_text(REDACT(json.dumps(obj, ensure_ascii=False, indent=1)), encoding="utf-8")
-            os.replace(tmp, d / name)
+            write_private(self.s.state_dir / name, REDACT(json.dumps(obj, ensure_ascii=False, indent=1)))
 
     async def tick(self) -> float:
         """One iteration; returns seconds to sleep before the next one."""
@@ -167,14 +163,9 @@ async def main_async(argv: list[str]) -> int:
 
     ap = argparse.ArgumentParser(prog="python -m app.poller")
     ap.add_argument("--once", action="store_true", help="one reading, print it, exit")
-    ap.add_argument("--chrome", action="store_true", help="use the installed Google Chrome")
-    ap.add_argument("--headed", action="store_true", help="show the browser window")
+    add_browser_flags(ap)
     args = ap.parse_args(argv)
-    s = load_settings()
-    if args.chrome:
-        s = replace(s, browser_channel="chrome")
-    if args.headed:
-        s = replace(s, headless=False)
+    s = apply_browser_flags(load_settings(), args)
     setup_logging(s.logs_dir, s.log_level)
     creds = load_credentials()
     async with WeClient(s, creds, LoginGuard(s, creds.fingerprint)) as client:

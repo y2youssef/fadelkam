@@ -1,0 +1,37 @@
+# WE quota tracker as a systemd *user* service: poller + local API + Firebase uploader.
+#
+# Install (once):
+#   systemctl --user enable ~/fadelkam/server/systemd/we-quota.service
+#   loginctl enable-linger "$USER"     # start at boot, before anyone logs in
+# Use:
+#   systemctl --user start|stop|restart|status we-quota
+#   journalctl --user -u we-quota -f   # console lines; full JSON events in server/state/logs/
+#
+# Account safety (CLAUDE.md): one instance only, and never restart within ~1 min of a login
+# (Chrome writes the session cookie late). Restart= below waits 2 min for the same reason.
+
+[Unit]
+Description=WE quota tracker (my.te.eg -> Firebase -> phone)
+Documentation=file://%h/fadelkam/server/README.md
+# Keep retrying forever: RestartSec already spaces the attempts out.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/fadelkam/server
+Environment=WE_BROWSER_CHANNEL=chrome
+Environment=PYTHONUNBUFFERED=1
+# At boot the Wi-Fi may not be up yet. Wait up to 60 s; not fatal, the poller copes with no network.
+ExecStartPre=-/usr/bin/nm-online -q -t 60
+ExecStart=%h/fadelkam/server/.venv/bin/python -m app.server
+# SIGTERM goes to python only. It closes Chrome itself, saves the session cookie and writes
+# "stopped" to Firebase (FAILURE_MODES #29, #44). Whatever is left after that gets SIGKILL.
+KillMode=mixed
+TimeoutStopSec=45
+Restart=on-failure
+RestartSec=120
+# Everything the server and Chrome create (profile, logs, screenshots) is owner-only.
+UMask=0077
+
+[Install]
+WantedBy=default.target

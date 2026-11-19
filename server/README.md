@@ -30,7 +30,27 @@ python -m app.server [--chrome] [--headed]   # API on 127.0.0.1:8080 + poller
 - The first start writes the local API token to `state/api_token` (development only).
 - Don't run two instances, and don't run this machine and another one against the same
   account at once. Logins less than ~1 min apart get refused as "max attempts". The guard
-  enforces 10 min between logins on *this* machine only.
+  enforces 10 min between logins on *this* machine only. On one machine a second server,
+  poller or browser probe refuses to start (lock on `state/instance.lock`).
+
+### As a service (the laptop)
+
+```bash
+systemctl --user enable ~/fadelkam/server/systemd/we-quota.service   # start with the user manager
+loginctl enable-linger "$USER"                                     # ...which starts at boot
+systemctl --user start|stop|restart|status we-quota
+journalctl --user -u we-quota -f                                   # console log
+```
+
+The unit sets `WE_BROWSER_CHANNEL=chrome`, waits up to 60 s for the network, restarts after a
+crash only after 2 min (Chrome writes the session cookie late, FAILURE_MODES #27), and makes
+everything it writes owner-only.
+
+Keeping the laptop awake: in Plasma, *System Settings → Power Management* has "When inactive:
+Do nothing" and "When laptop lid closed: Do nothing", for AC and battery. Before anyone logs
+in (after a reboot) logind handles the lid itself and suspends. To keep it awake on AC there
+too: `sudo install -Dm644 systemd/logind-lid-on-ac.conf /etc/systemd/logind.conf.d/we-quota.conf`
+(takes effect at the next boot).
 
 ## Cloud (Firebase): how the phone gets the data
 
@@ -87,6 +107,10 @@ python -m app.probe status    # guard state, recent logins, session lifetimes
 python -m app.probe reset     # clear a hard stop after a human checked why it happened
 python -m app.probe page      # load the login page only: WAF / selectors / build id
 ```
+
+`page`, `login` and `session` open the browser, so stop the service first. `reset` with the
+service running only changes the file: the server keeps its own copy of the ledger in memory,
+so do stop, reset, start.
 
 Evidence lives in `state/` (private, git-ignored): `logs/scraper.jsonl` (events),
 `logs/api.jsonl` (every portal call), `incidents/<time>_<kind>/` (screenshot, HTML, API

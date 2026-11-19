@@ -13,7 +13,11 @@ evidence is) before changing behaviour.
   refused as "max attempts" and locked the account for an hour.
 - Don't restart the server within ~1 min of a login: Chrome writes the session cookie to disk late.
 - A guard hard stop means a human checks why first (`python -m app.probe status`, the incident
-  folder), and only then runs `probe reset`.
+  folder), and only then runs `probe reset`, with the service stopped (the running server keeps
+  its own copy of the ledger in memory).
+- On the laptop the server runs as the systemd user service `we-quota` (starts at boot). Don't run
+  `python -m app.server` or a browser probe next to it; they refuse anyway (`state/instance.lock`).
+  Stop the service first, and keep restarts more than 1 min away from a login.
 
 ## Secrets
 - `creds.txt` (repo root) and `server/state/` are private and git-ignored. `server/state/` holds the
@@ -28,6 +32,8 @@ evidence is) before changing behaviour.
 - Prove safety claims with tests (`cd server && pytest -q`, offline, no network).
 
 ## Commands (from `server/`)
+- `systemctl --user start|stop|restart|status we-quota`, `journalctl --user -u we-quota -f`: the
+  running server (unit file in `server/systemd/`)
 - `python -m app.server [--chrome]`: poller + local API + Firebase uploader
 - `python -m app.probe status|session|page|reset`: guard state and diagnostics
 - `python -m app.cloud check|deploy-rules|pair|devices|revoke|test-push`: Firebase relay

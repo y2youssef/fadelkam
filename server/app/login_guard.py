@@ -20,14 +20,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 from .config import Settings
 from .errors import AccountLocked, ChallengeRequired, LoginBlockedByGuard, LoginRejected, WeError
+from .files import write_private
 from .logs import event, get_logger, iso, utcnow
 
 log = get_logger("guard")
@@ -65,10 +64,7 @@ class LoginGuard:
         cutoff = utcnow() - timedelta(days=_KEEP_DAYS)
         self.d["attempts"] = [a for a in self.d["attempts"] if _parse(a["started_at"]) >= cutoff][-500:]
         self.d["sessions"] = self.d["sessions"][-200:]
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.d, indent=1), encoding="utf-8")
-        os.replace(tmp, self.path)
+        write_private(self.path, json.dumps(self.d, indent=1))
 
     # ------------------------------------------------------------------ gate
     def check(self) -> None:

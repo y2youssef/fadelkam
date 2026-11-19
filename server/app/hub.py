@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from datetime import datetime
@@ -24,6 +25,22 @@ log = get_logger("hub")
 MAX_SUBSCRIBERS = 10
 QUEUE_SIZE = 50
 MIN_FORCED_REFRESH_S = 30
+CODE_RE = re.compile(r"^[A-Za-z0-9]{3,12}$")  # a captcha code from the phone or the local API
+
+
+def code_file(state_dir: Path) -> Path:
+    """Operator fallback for a captcha: write the code into this file."""
+    return state_dir / "challenge" / "code.txt"
+
+
+def take_code_file(path: Path) -> str | None:
+    """The code written into `path` (the file is removed), "" if it was empty (= give up),
+    None while there is no file."""
+    if not path.exists():
+        return None
+    code = path.read_text(encoding="utf-8").strip()
+    path.unlink(missing_ok=True)
+    return code
 
 
 class Hub:
@@ -116,8 +133,8 @@ class Hub:
         loop = asyncio.get_running_loop()
         self._code = loop.create_future()
         self.challenge = {"id": uuid.uuid4().hex[:8], "kind": kind, "since": iso(), "has_image": image is not None}
-        code_file = self.s.state_dir / "challenge" / "code.txt"
-        code_file.unlink(missing_ok=True)
+        path = code_file(self.s.state_dir)
+        path.unlink(missing_ok=True)
         event(log, logging.WARNING, "challenge.pending", id=self.challenge["id"], kind=kind)
         self.publish("challenge")
         try:
@@ -125,9 +142,8 @@ class Hub:
                 done, _ = await asyncio.wait({self._code}, timeout=1)
                 if done:
                     return self._code.result()
-                if code_file.exists():
-                    code = code_file.read_text(encoding="utf-8").strip()
-                    code_file.unlink(missing_ok=True)
+                code = take_code_file(path)
+                if code is not None:
                     return code or None
         finally:
             event(log, logging.INFO, "challenge.closed", id=self.challenge["id"])
