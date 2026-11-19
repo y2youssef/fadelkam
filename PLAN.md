@@ -198,6 +198,7 @@ _Last updated: 2026-11-19_
 - Runs as the systemd user service `we-quota` (`server/systemd/we-quota.service`), enabled, with
   linger, so it starts at boot before login. The Wi-Fi password is stored system-wide, so the network
   is up before login too.
+- First laptop login 2026-11-19 15:18:46 UTC, no captcha; first reading 15:18:51 (3631 of 6250 MB). Firebase still off (no key yet).
 - Awake: Plasma never suspends when idle and ignores the lid (AC and battery). Optional root step for
   the login screen: `server/systemd/logind-lid-on-ac.conf`.
 
