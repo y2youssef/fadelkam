@@ -72,6 +72,7 @@ class WeClient:
         self._doc_loaded_at: float | None = None
         self._saved_cookies: str | None = None
         self._quota_miss_streak = 0
+        self._had_session = False  # seen logged in by this process since the last loss
         REDACT.add(creds.password, "password")
         REDACT.add(creds.phone, "phone", keep_last=3)
 
@@ -543,8 +544,22 @@ class WeClient:
 
     async def ensure_logged_in(self, code_provider: CodeProvider | None = None) -> None:
         if await self.has_session_token() and not self._on_login_page():
+            self._had_session = True
             return
+        if self._had_session:  # logged in at the last check, gone now (e.g. the SPA logged out)
+            self._session_lost("gone_between_polls")
         await self.login(code_provider)
+        self._had_session = True
+
+    def _session_lost(self, reason: str) -> None:
+        """WE ended the session under us. The guard then holds logins back for a while, because
+        another device logging in is one way this happens (FAILURE_MODES #7)."""
+        if self._had_session:
+            self.guard.session_lost(reason)
+        else:  # never confirmed logged in by this process: nothing was taken from us
+            self.guard.end_session(reason)
+        self._had_session = False
+        self.forget_session_cookies()
 
     # ------------------------------------------------------------------ data calls
     def _on_load(self) -> None:
@@ -620,8 +635,7 @@ class WeClient:
         except PlaywrightTimeout as e:
             await asyncio.sleep(1)
             if self._on_login_page():
-                self.guard.end_session("redirected_to_login")
-                self.forget_session_cookies()
+                self._session_lost("redirected_to_login")
                 raise SessionExpired(f"redirected to login while opening {route}") from e
             await self._check_waf()
             err = PortalChanged(f"route {route} did not call {endpoint} within {timeout_ms} ms"
@@ -644,8 +658,7 @@ class WeClient:
             msg = str(header.get("errorMsg") or "")
             kw = {"error_no": header.get("errorNo"), "ret_code": header.get("retCode")}
             if self._on_login_page() or any(w in msg.lower() for w in ("session", "login", "token", "expired")):
-                self.guard.end_session(f"api:{header.get('errorNo')}")
-                self.forget_session_cookies()
+                self._session_lost(f"api:{header.get('errorNo')}")
                 raise SessionExpired(msg or "session expired", **kw)
             err = ApiError(msg or f"{endpoint} retCode {header.get('retCode')}", **kw)
             err.incident = await save_incident(self.s, "api_error", page=page, recorder=self.recorder, error=err)

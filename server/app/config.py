@@ -62,6 +62,10 @@ class Settings:
 
     # ---- login guard (protects the account from lockouts) ----
     min_login_gap_s: int = 600           # a login 45 s after another was refused as "max attempts"
+    # After WE ends a session we were using, wait this long before logging in again: if another
+    # device (the owner's phone) just logged in and kicked us out (FAILURE_MODES #7), an instant
+    # re-login would be two logins about a minute apart, the pattern WE locked us out for (#1b).
+    session_lost_gap_s: int = 600
     max_logins_per_hour: int = 4
     max_logins_per_day: int = 30
     lockout_margin_min: int = 5          # added on top of the lock duration WE reports
@@ -112,6 +116,7 @@ def load_settings() -> Settings:
         refresh_hop_route=_env("WE_REFRESH_HOP_ROUTE", "/usage"),
         poll_interval_s=_env_int("WE_POLL_INTERVAL_S", 180),
         min_login_gap_s=_env_int("WE_MIN_LOGIN_GAP_S", 600),
+        session_lost_gap_s=_env_int("WE_SESSION_LOST_GAP_S", 600),
         max_logins_per_hour=_env_int("WE_MAX_LOGINS_PER_HOUR", 4),
         max_logins_per_day=_env_int("WE_MAX_LOGINS_PER_DAY", 30),
         max_consecutive_rejections=_env_int("WE_MAX_CONSECUTIVE_REJECTIONS", 2),

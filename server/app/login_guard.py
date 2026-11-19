@@ -7,6 +7,8 @@ logs in often. A bug or a wrong password must never turn into a lockout loop.
 Rules (all persisted in state/login_ledger.json so a restart can't reset them):
   * An attempt is written to disk BEFORE the login is submitted; a crash mid-login still counts.
   * At least `min_login_gap_s` (10 min) between login submissions; caps per rolling hour / day.
+  * WE ended a session we were using -> wait `session_lost_gap_s` (10 min) before logging in
+    again: another device may have just logged in (see session_lost()).
   * AccountLocked  -> no attempts until WE's lock expires (+margin); by default also a hard stop.
   * LoginRejected  -> counts toward `max_consecutive_rejections`, then hard stop.
   * ChallengeRequired (captcha/SMS nobody answered) -> 30 min backoff; hard stop after 3 in a row.
@@ -47,7 +49,8 @@ class LoginGuard:
     # ------------------------------------------------------------------ persistence
     def _load(self) -> dict[str, Any]:
         base = {"attempts": [], "sessions": [], "locked_until": None, "backoff_until": None,
-                "transient_streak": 0, "consecutive_rejections": 0, "consecutive_challenges": 0, "hard_stop": None}
+                "relogin_after": None, "transient_streak": 0, "consecutive_rejections": 0,
+                "consecutive_challenges": 0, "hard_stop": None}
         if self.path.exists():
             try:
                 base.update(json.loads(self.path.read_text(encoding="utf-8")))
@@ -82,7 +85,9 @@ class LoginGuard:
                 raise LoginBlockedByGuard(f"hard stop: {hs['reason']} (since {hs['since']}); run reset after fixing",
                                           retry_at=_parse(self.d.get("locked_until")), needs_human=True)
 
-        for key, why in (("locked_until", "WE account lock"), ("backoff_until", "transient-error backoff")):
+        for key, why in (("locked_until", "WE account lock"), ("backoff_until", "transient-error backoff"),
+                         ("relogin_after", "cooldown after WE ended the session (another device may have "
+                                           "just logged in)")):
             until = _parse(self.d.get(key))
             if until and until > now:
                 raise LoginBlockedByGuard(f"{why} until {iso(until)}", retry_at=until)
@@ -178,6 +183,20 @@ class LoginGuard:
               lifetime_s=s["lifetime_s"])
         return s["lifetime_s"]
 
+    def session_lost(self, reason: str) -> None:
+        """WE ended a session we were using (redirect to #/login, a session error, cookie gone).
+
+        If the cause was another device logging in (the owner's phone, FAILURE_MODES #7), logging
+        straight back in would put two logins about a minute apart: a login 45 s after another was
+        answered with a one-hour lock (#1b). So no login for session_lost_gap_s, persisted so a
+        restart can't skip it. The cost is ~10 min of stale data, a few times a month at most."""
+        lifetime = self.end_session(reason)
+        until = utcnow() + timedelta(seconds=self.s.session_lost_gap_s)
+        self.d["relogin_after"] = iso(until)
+        self._save()
+        event(log, logging.WARNING, "guard.relogin_cooldown", reason=reason, until=iso(until),
+              session_lifetime_s=lifetime)
+
     def resume_session(self) -> None:
         """The browser restored a live session after a restart: reopen its ledger record so its
         lifetime keeps counting from the original login."""
@@ -212,6 +231,7 @@ class LoginGuard:
             "hard_stop": self.d.get("hard_stop"),
             "locked_until": self.d.get("locked_until"),
             "backoff_until": self.d.get("backoff_until"),
+            "relogin_after": self.d.get("relogin_after"),
             "consecutive_rejections": self.d["consecutive_rejections"],
             "consecutive_challenges": self.d.get("consecutive_challenges", 0),
             "attempts_last_hour": self._count(timedelta(hours=1)),

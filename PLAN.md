@@ -173,7 +173,8 @@ _Last updated: 2026-11-19_
   live login to capture the exact JSON and locate the right "free unit" bucket (data vs voice vs SMS;
   and separating mobile-data from any DSL bundle on the same login).
 - **Token lifetime** unknown — determines re-login frequency. The owner reports sessions are short;
-  the login ledger now records every session's lifetime. Possible single-active-session policy (unconfirmed).
+  the login ledger now records every session's lifetime. **Answered:** one session lasted 20 h+ with the
+  keepalive, and a login in the My WE app doesn't end it (2026-11-19, FAILURE_MODES #7).
 - **Service number starts with 010** (not WE-native 015) — must be a line ported to WE; confirm the
   portal shows its mobile data bundle.
 - **Server reachability from phone:** solved by the Firebase relay (2026-11-19). The laptop only
