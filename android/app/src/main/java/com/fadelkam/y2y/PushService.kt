@@ -40,14 +40,9 @@ class PushService : FirebaseMessagingService() {
         }
     }
 
-    /** The counter is only on screen while mobile data is on. */
-    private fun showIfMobileData(s: QuotaState) {
-        when {
-            !Cellular.isUp(this) -> if (!QuotaService.running) Notifier.cancelQuota(this)
-            QuotaService.running -> Notifier.showQuota(this, s)
-            else -> QuotaService.start(this) // it reads the store and shows s
-        }
-    }
+    /** The reading is in the store already; the counter's state machine decides whether it shows. */
+    private fun showIfMobileData(@Suppress("UNUSED_PARAMETER") s: QuotaState) =
+        QuotaService.send(this, Counter.Event.READING)
 
     private fun fetchChallenge(pushedId: String?) = runBlocking {
         runCatching {

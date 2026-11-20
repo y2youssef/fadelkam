@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import Settings
+from .history import History
 from .logs import event, get_logger, iso, utcnow
 from .quota import Quota
 
@@ -44,7 +45,7 @@ def take_code_file(path: Path) -> str | None:
 
 
 class Hub:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, history: History | None = None) -> None:
         self.s = settings
         self.quota: dict[str, Any] | None = self._load_last_quota()
         self.status: dict[str, Any] = {"state": "starting", "since": iso()}
@@ -56,6 +57,7 @@ class Hub:
         self._last_forced = 0.0
         self._listeners: list[Callable[[str], None]] = []
         self.cloud: dict[str, Any] | None = None  # CloudPublisher health, shown on /healthz
+        self.history = history  # usage history (app/history.py); None in tools and tests
 
     # ------------------------------------------------------------------ snapshot
     def _load_last_quota(self) -> dict[str, Any] | None:
@@ -120,6 +122,12 @@ class Hub:
     # ------------------------------------------------------------------ poller callbacks
     async def on_quota(self, quota: Quota) -> None:
         self.quota = quota.as_dict()
+        if self.history is not None:
+            try:
+                self.history.add_reading(datetime.fromisoformat(quota.fetched_at), quota.remaining_mb,
+                                         quota.total_mb, quota.offer)
+            except Exception:  # the history must never break the poller
+                event(log, logging.ERROR, "history.write_failed", exc_info=True)
         self.publish("quota")
 
     def on_status(self, status: dict[str, Any]) -> None:

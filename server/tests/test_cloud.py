@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs
 
@@ -367,6 +368,45 @@ def test_dead_installation_id_is_dropped(settings, fake):
         hub, pub = make(settings, fake)
         assert await pub.send_test_push() == 0
         assert fake.get("devices/uidF") is None
+    asyncio.run(go())
+
+
+def test_phone_session_events_reach_the_history_and_are_cleared(settings, fake):
+    """WE mobile data on/off from the phone: recorded even when old (laptop was off), then deleted."""
+    from app.history import History
+    from app.cloud import inbox_items
+
+    async def go():
+        hist = History(settings.state_dir / "usage.db")
+        hub = Hub(settings, history=hist)
+        hub_pub = make(settings, fake)[1]
+        hub_pub.hub = hub
+        start_ms = int(time.time() * 1000) - 3 * 3600 * 1000           # 3 h ago: not "stale" for history
+        fake.tree["inbox"] = {"uidA": {"session": {"-k1": {"on": True, "t": start_ms, "at": 1},
+                                                   "-k2": {"on": False, "t": start_ms + 600_000, "at": 1}}}}
+        for uid, kind, value in inbox_items("put", {"path": "/", "data": fake.tree["inbox"]}):
+            await hub_pub.handle_inbox(uid, kind, value)
+        assert hist.session_doc(start_ms)["end"] is not None
+        assert fake.get("inbox/uidA/session/-k1") is None and fake.get("inbox/uidA/session/-k2") is None
+        # one event arriving on its own path, as the live stream sends it
+        items = inbox_items("put", {"path": "/uidA/session/-k3", "data": {"on": True, "t": start_ms + 3_600_000, "at": 1}})
+        assert items == [("uidA", "session", {"-k3": {"on": True, "t": start_ms + 3_600_000, "at": 1}})]
+    asyncio.run(go())
+
+
+def test_usage_is_mirrored_to_firebase(settings, fake):
+    from app.history import History
+
+    async def go():
+        hist = History(settings.state_dir / "usage.db")
+        hub, pub = make(settings, fake)
+        hub.history = hist
+        hist.add_reading(datetime(2026, 11, 20, 9, tzinfo=timezone.utc), 3000.0)
+        hist.add_reading(datetime(2026, 11, 20, 10, tzinfo=timezone.utc), 2990.0)
+        await pub.sync_db()
+        assert fake.get("usage/daily/2026-11-20")["used_mb"] == 10.0
+        assert fake.get("usage/readings/2026-11-20/120000") == 2990.0
+        assert (settings.state_dir / "usage_cloud_synced").exists()
     asyncio.run(go())
 
 

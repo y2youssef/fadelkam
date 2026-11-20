@@ -51,12 +51,12 @@ object Notifier {
         val stale = s.isStale()
         val problem = problem(s, stale)
         val details = listOfNotNull(
-            s.totalMb?.let { "of ${size(it)}" },
+            s.totalMb?.let { "of ${mb(it)}" },
             s.renewsInDays?.let { "renews in $it d" },
         ).joinToString(" · ")
         val b = NotificationCompat.Builder(c, CH_QUOTA)
             .setSmallIcon(R.drawable.ic_stat_data)
-            .setContentTitle(s.remainingMb?.let { "${size(it)} left" } ?: "No reading yet")
+            .setContentTitle(s.remainingMb?.let { "${mb(it)} left" } ?: "No reading yet")
             .setContentText(listOfNotNull(problem, details.ifEmpty { null }).joinToString(" · "))
             .setStyle(NotificationCompat.BigTextStyle().bigText(
                 listOfNotNull(problem, details.ifEmpty { null }, s.offer, s.error?.takeIf { problem != null })
@@ -101,7 +101,7 @@ object Notifier {
     /** Status bar chip: a few characters only. */
     private fun shortText(s: QuotaState, stale: Boolean): String {
         val left = s.remainingMb ?: return "—"
-        val v = if (left >= 1024) String.format(Locale.US, "%.1f GB", left / 1024)
+        val v = if (left >= 1024) String.format(Locale.US, "%.2f GB", left / 1024)
                 else String.format(Locale.US, "%.0f MB", left)
         return if (stale || s.state == "stopped") "$v?" else v
     }
@@ -171,6 +171,9 @@ object Notifier {
     fun cancelAlert(c: Context) = c.getSystemService(NotificationManager::class.java).cancel(ID_ALERT)
 
     // ------------------------------------------------------------------ helpers
+    /** Exact MB ("3,109 MB"): WE's number moves in steps of a few MB, which GB would hide. */
+    fun mb(v: Double): String = String.format(Locale.US, "%,.0f MB", v)
+
     fun size(mb: Double): String =
         if (mb >= 1024) String.format(Locale.US, "%.2f GB", mb / 1024) else String.format(Locale.US, "%.0f MB", mb)
 

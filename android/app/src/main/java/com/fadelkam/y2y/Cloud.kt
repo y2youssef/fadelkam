@@ -1,6 +1,8 @@
 package com.fadelkam.y2y
 
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.FirebaseDatabase
@@ -9,6 +11,7 @@ import com.google.firebase.installations.FirebaseInstallations
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Everything the phone does with Firebase. The paths and fields must match the security rules in
@@ -76,6 +79,24 @@ object Cloud {
         val u = uid ?: error("not signed in")
         write("inbox/$u/$kind", extra + ("at" to ServerValue.TIMESTAMP), timeoutMs)
     }
+
+    /**
+     * WE mobile data on/off, for the laptop's usage history (/inbox/<uid>/session/<id>). Fire and
+     * forget: the write is queued (on disk) at once, the connection is held until it's sent, at
+     * most SESSION_HOLD_MS, and without a network it goes out with the next connection.
+     */
+    fun sessionEvent(on: Boolean, tMs: Long) {
+        val u = uid ?: return
+        acquire()
+        val released = AtomicBoolean(false)
+        val release = { if (released.compareAndSet(false, true)) release() }
+        db.getReference("inbox/$u/session").push()
+            .setValue(mapOf("on" to on, "t" to tMs, "at" to ServerValue.TIMESTAMP))
+            .addOnCompleteListener { release() }
+        Handler(Looper.getMainLooper()).postDelayed({ release() }, SESSION_HOLD_MS)
+    }
+
+    private const val SESSION_HOLD_MS = 60_000L
 
     private suspend fun write(path: String, value: Map<String, Any>, timeoutMs: Long = TIMEOUT_MS) {
         online(timeoutMs) { db.getReference(path).setValue(value).await() }

@@ -20,6 +20,9 @@ StartLimitIntervalSec=0
 Type=simple
 WorkingDirectory=%h/fadelkam/server
 Environment=WE_BROWSER_CHANNEL=chrome
+# Owner's choice 2026-11-20: a reading every ~45 s (below the plan's 90-180 s; the code default is 180).
+# Watch for api.not_ok / waf_blocked in the log; go back to 90 if WE pushes back.
+Environment=WE_POLL_INTERVAL_S=45
 Environment=PYTHONUNBUFFERED=1
 # At boot the Wi-Fi may not be up yet. Wait up to 60 s; not fatal, the poller copes with no network.
 ExecStartPre=-/usr/bin/nm-online -q -t 60

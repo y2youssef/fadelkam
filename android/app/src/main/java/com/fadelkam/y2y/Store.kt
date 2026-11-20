@@ -27,6 +27,10 @@ object Store {
     fun shownChallenge(c: Context): String? = prefs(c).getString("challenge", null)
     fun setShownChallenge(c: Context, id: String?) = prefs(c).edit { putString("challenge", id) }
 
+    /** Start (ms) of the WE mobile data session in progress, if any: survives service restarts. */
+    fun openSession(c: Context): Long? = prefs(c).getLong("session", 0L).takeIf { it > 0 }
+    fun setOpenSession(c: Context, startMs: Long?) = prefs(c).edit { putLong("session", startMs ?: 0L) }
+
     /** The captcha image, kept for a retry notification and for the app screen. */
     fun captchaFile(c: Context) = File(c.cacheDir, "captcha.png")
 }

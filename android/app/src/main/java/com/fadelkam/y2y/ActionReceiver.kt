@@ -12,8 +12,8 @@ import kotlinx.coroutines.launch
 /** Buttons on the notifications: Refresh, the captcha reply, and putting a swiped-away sticky back. */
 class ActionReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
-        if (i.action == RESHOW) { // swiped away while mobile data is still on: put it back
-            if (Cellular.isUp(c)) Notifier.showQuota(c, Store.load(c))
+        if (i.action == RESHOW) { // swiped away: the counter's state machine decides
+            QuotaService.send(c, Counter.Event.SWIPED)
             return
         }
         val pending = goAsync()

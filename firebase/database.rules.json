@@ -8,6 +8,9 @@
     "challenge": {
       ".read": "auth != null && root.child('allowed').child(auth.uid).exists()"
     },
+    "usage": {
+      ".read": "auth != null && root.child('allowed').child(auth.uid).exists()"
+    },
     "allowed": {
       "$uid": {
         ".read": "auth != null && auth.uid === $uid"
@@ -53,6 +56,15 @@
           ".validate": "newData.hasChildren(['at'])",
           "at": { ".validate": "newData.val() === now" },
           "$other": { ".validate": false }
+        },
+        "session": {
+          "$id": {
+            ".validate": "newData.hasChildren(['on', 't', 'at'])",
+            "on": { ".validate": "newData.isBoolean()" },
+            "t": { ".validate": "newData.isNumber() && newData.val() > 1700000000000 && newData.val() <= now + 600000" },
+            "at": { ".validate": "newData.val() === now" },
+            "$other": { ".validate": false }
+          }
         },
         "$other": { ".validate": false }
       }

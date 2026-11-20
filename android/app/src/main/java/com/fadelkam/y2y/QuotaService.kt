@@ -30,27 +30,57 @@ import kotlinx.coroutines.launch
 class QuotaService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private val cellular = mutableSetOf<Network>()
     private val cm by lazy { getSystemService(ConnectivityManager::class.java) }
 
-    /** Mobile data has been gone for HIDE_GRACE_MS (not just a handover blip): hide and stop. */
-    private val hide = Runnable {
-        if (!Cellular.isUp(this)) {
-            Log.i(TAG, "mobile data off: hiding")
-            stopSelf()
-        }
-    }
+    /** Cellular networks with internet, as the callbacks report them (main thread only). Asking
+     *  ConnectivityManager from inside onLost isn't reliable: the dying network can still be
+     *  listed there, which left the counter up after data was switched off (seen 2026-11-20 13:44). */
+    private val cellular = mutableSetOf<Network>()
+
+    /** Starts SHOWN: startForeground() in onCreate has just posted the counter. */
+    private val counter = Counter(Counter.State.SHOWN)
+    private var destroyed = false
+
+    private val graceOver = Runnable { handle(Counter.Event.GRACE_ELAPSED) }
+
+    /** When WE data went down (start of the grace countdown): the session's end if it stays down. */
+    private var downAtMs: Long? = null
+
+    /** One more look a little later: right after a data-SIM switch the new network can come up
+     *  before the data-SIM setting changes, and a change can land between our looks. */
+    private val recheck = Runnable { look(again = false) }
 
     private val net = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(n: Network) {
-            main.post { cellular += n; main.removeCallbacks(hide) }
+            main.post { cellular += n; Log.i(TAG, "cellular up: $n"); look() }
         }
 
         override fun onLost(n: Network) {
-            main.post {
-                cellular -= n
-                if (cellular.isEmpty()) main.postDelayed(hide, HIDE_GRACE_MS)
-            }
+            main.post { cellular -= n; Log.i(TAG, "cellular lost: $n"); look() }
+        }
+    }
+
+    /** Turn what the network callbacks reported into a WE_DATA_UP/DOWN event (main thread). */
+    private fun look(again: Boolean = true) {
+        val up = cellular.isNotEmpty() && Cellular.weIsDataSim(this)
+        handle(if (up) Counter.Event.WE_DATA_UP else Counter.Event.WE_DATA_DOWN)
+        if (again) {
+            main.removeCallbacks(recheck)
+            main.postDelayed(recheck, RECHECK_MS)
+        }
+    }
+
+    /** The only place the counter changes (main thread). */
+    private fun handle(e: Counter.Event) {
+        if (destroyed) return
+        val from = counter.state
+        val actions = counter.on(e)
+        if (from != counter.state || Counter.Action.POST !in actions) Log.i(TAG, "$from --$e--> ${counter.state} $actions")
+        for (a in actions) when (a) {
+            Counter.Action.POST -> Notifier.showQuota(this, Store.load(this))
+            Counter.Action.START_GRACE -> { downAtMs = System.currentTimeMillis(); main.postDelayed(graceOver, HIDE_GRACE_MS) }
+            Counter.Action.CANCEL_GRACE -> { downAtMs = null; main.removeCallbacks(graceOver) }
+            Counter.Action.STOP -> { endSession(downAtMs ?: System.currentTimeMillis()); stopSelf() }
         }
     }
 
@@ -61,12 +91,16 @@ class QuotaService : Service() {
         // A started foreground service must call startForeground promptly, even if it stops at once.
         ServiceCompat.startForeground(this, Notifier.ID_QUOTA, Notifier.quota(this, Store.load(this)),
             if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0)
-        running = true
+        instance = this
         if (!Store.isPaired(this) || !Cellular.isUp(this)) { // e.g. restarted by the system with data off
             stopSelf()
             return
         }
+        beginSession()
         cm.registerNetworkCallback(Cellular.request, net)
+        // The callback reports the networks already up within moments. If data went off between
+        // the check above and the registration, none come: this look catches that case.
+        main.postDelayed({ look() }, FIRST_LOOK_MS)
         scope.launch {
             runCatching { Cloud.read("state") }
                 .onSuccess { snap ->
@@ -80,13 +114,32 @@ class QuotaService : Service() {
         }
     }
 
+    /** A WE mobile data session starts with the service, unless one is already open (the system
+     *  restarted us, or the phone rebooted with data on): that one simply continues. */
+    private fun beginSession() {
+        if (Store.openSession(this) != null) return
+        val now = System.currentTimeMillis()
+        Store.setOpenSession(this, now)
+        Cloud.sessionEvent(on = true, tMs = now)
+        Log.i(TAG, "session started")
+    }
+
+    private fun endSession(atMs: Long) {
+        if (Store.openSession(this) == null) return
+        Store.setOpenSession(this, null)
+        Cloud.sessionEvent(on = false, tMs = atMs)
+        Log.i(TAG, "session ended")
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (Cellular.isUp(this)) Notifier.showQuota(this, Store.load(this))
+        if (Cellular.isUp(this)) handle(Counter.Event.WE_DATA_UP)
         return START_STICKY // if the system kills us while data is on, it restarts us
     }
 
     override fun onDestroy() {
-        running = false
+        destroyed = true
+        instance = null
+        Cellular.arm(this) // hidden now: make sure something wakes us when WE data comes back
         main.removeCallbacksAndMessages(null)
         runCatching { cm.unregisterNetworkCallback(net) }
         scope.cancel()
@@ -96,11 +149,28 @@ class QuotaService : Service() {
 
     companion object {
         private const val TAG = "QuotaService"
-        private const val HIDE_GRACE_MS = 30_000L
+        private const val HIDE_GRACE_MS = 5_000L  // rides out a brief signal drop; data off hides in ~5 s
+        private const val RECHECK_MS = 5_000L
+        private const val FIRST_LOOK_MS = 10_000L
 
         @Volatile
-        var running = false
-            private set
+        private var instance: QuotaService? = null
+
+        val running: Boolean get() = instance != null
+
+        /**
+         * An event from elsewhere in the app (a push, a swipe, a wake-up trigger, the app screen).
+         * Running: handed to the service's state machine. Not running: start the service if WE
+         * data is on (it shows the counter), otherwise drop a leftover plain notification.
+         */
+        fun send(c: Context, e: Counter.Event) {
+            val s = instance
+            when {
+                s != null -> s.main.post { s.handle(e) }
+                Cellular.isUp(c) -> start(c)
+                else -> Notifier.cancelQuota(c)
+            }
+        }
 
         /**
          * Show the counter. From the background Android allows this only in some cases: right

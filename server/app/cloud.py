@@ -30,6 +30,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
@@ -40,7 +41,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 from .config import PROJECT_DIR, Settings
 from .hub import CODE_RE, Hub
-from .logs import REDACT, event, get_logger, iso
+from .logs import REDACT, event, get_logger, iso, utcnow
 
 log = get_logger("cloud")
 
@@ -99,7 +100,7 @@ class CloudConfig:
     db_url: str
     project_id: str
     heartbeat_s: int = 300
-    fcm_quota_min_gap_s: int = 120   # at most one "reading changed" push per 2 min
+    fcm_quota_min_gap_s: int = 45    # at most one "reading changed" push per 45 s (one per poll at 45 s)
     devices_cache_s: int = 300
     inbox_max_age_s: int = 900       # ignore phone messages older than this (laptop was off)
     retry_min_s: float = 2.0
@@ -370,6 +371,8 @@ def inbox_items(ev: str, payload: dict[str, Any]) -> list[tuple[str, str, Any]]:
                 out.append((prefix[0], kind, v))
         elif len(prefix) == 2:
             out.append((prefix[0], prefix[1], value))
+        elif len(prefix) == 3 and prefix[1] == "session":  # one event under /inbox/<uid>/session/<id>
+            out.append((prefix[0], "session", {prefix[2]: value}))
         else:  # a sub-field changed: report the item as malformed rather than guess
             out.append((prefix[0], prefix[1], {"_partial": True}))
 
@@ -407,6 +410,7 @@ class CloudPublisher:
         self._wake: asyncio.TimerHandle | None = None
         self._devices: dict[str, str] | None = None
         self._devices_at = 0.0
+        self._usage_queued = False
         self.health: dict[str, Any] = {"state": "starting", "since": iso()}
         hub.cloud = self.health
         hub.add_listener(lambda kind: self._dirty.set())
@@ -501,6 +505,7 @@ class CloudPublisher:
             self._last_state, self._force_write, self._last_write = state, False, time.monotonic()
             event(log, logging.DEBUG, "cloud.state_written", state=state["status"]["state"])
         await self._sync_challenge(snap.get("challenge"))
+        await self._sync_usage()
 
     async def _sync_challenge(self, ch: dict[str, Any] | None) -> None:
         cid = ch["id"] if ch else None
@@ -608,6 +613,48 @@ class CloudPublisher:
                 self._force_write = True
                 self._dirty.set()
 
+    async def _sync_usage(self) -> None:
+        """Mirror the usage history to /usage (app/history.py). The first sync of a process writes
+        everything once if Firebase has never had it, else the last few days: it's small."""
+        h = self.hub.history
+        if h is None:
+            return
+        if not self._usage_queued:
+            marker = self.s.state_dir / "usage_cloud_synced"
+            h.queue_all(since=None if not marker.exists() else utcnow() - timedelta(days=3))
+            self._usage_queued = True
+        pending = h.take_pending()
+        if not pending:
+            return
+        items = list(pending.items())
+        try:
+            for i in range(0, len(items), 500):  # one multi-path update per 500 paths
+                await self.db.patch("usage", dict(items[i:i + 500]))
+        except CloudError:
+            h.restore_pending(pending)  # rewriting is harmless: same values
+            raise
+        (self.s.state_dir / "usage_cloud_synced").touch()
+        event(log, logging.DEBUG, "cloud.usage_written", paths=len(pending))
+
+    async def _handle_sessions(self, uid: str, events: Any) -> None:
+        """WE mobile data on/off from the phone (/inbox/<uid>/session/<id> = {on, t, at})."""
+        for key, ev in (list(events.items()) if isinstance(events, dict) else ()):  # a snapshot: we delete as we go
+            if ev is None or not UID_RE.match(str(key)):  # our own delete echoing back
+                continue
+            ok = isinstance(ev, dict) and isinstance(ev.get("on"), bool) and isinstance(ev.get("t"), (int, float))
+            result = "malformed" if not ok else "no history"
+            if ok and self.hub.history is not None:
+                try:
+                    result = self.hub.history.add_session_event(ev["on"], int(ev["t"]), uid) or "ignored"
+                except Exception:
+                    event(log, logging.ERROR, "history.write_failed", exc_info=True)
+                    result = "error"
+            event(log, logging.INFO if ok else logging.WARNING, "cloud.session_event", device=uid[:6],
+                  on=ev.get("on") if ok else None, at=iso(datetime.fromtimestamp(ev["t"] / 1000, timezone.utc)) if ok else None,
+                  result=result)
+            await self.db.delete(f"inbox/{uid}/session/{key}")
+        self._dirty.set()  # upload the session's usage
+
     # ------------------------------------------------------------------ phone -> hub
     async def _inbox_loop(self) -> None:
         fails = 0
@@ -646,6 +693,9 @@ class CloudPublisher:
             return
         self._devices = None  # any phone activity: re-read devices on the next push
         dev = uid[:6]
+        if kind == "session":  # history, not a command: never too old to record
+            await self._handle_sessions(uid, value)
+            return
         ok = isinstance(value, dict) and isinstance(value.get("at"), (int, float))
         age_s = (time.time() * 1000 - value["at"]) / 1000 if ok else None
         if not ok or age_s > self.cfg.inbox_max_age_s:

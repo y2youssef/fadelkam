@@ -25,6 +25,7 @@ from .api import create_app
 from .cloud import CloudConfigError, CloudPublisher, load_cloud_config
 from .config import Settings, add_browser_flags, apply_browser_flags, load_credentials, load_settings
 from .files import write_private
+from .history import History
 from .hub import Hub
 from .login_guard import LoginGuard
 from .logs import REDACT, event, get_logger, setup_logging
@@ -101,7 +102,12 @@ async def main_async(argv: list[str]) -> int:
     except CloudConfigError as e:
         raise SystemExit(f"cloud: {e}")
 
-    hub = Hub(s)
+    history = None
+    try:  # usage history (app/history.py); the scraper runs without it if the file is unusable
+        history = History(s.state_dir / "usage.db", logs_dir=s.logs_dir)
+    except Exception:
+        event(log, logging.ERROR, "history.unavailable", exc_info=True)
+    hub = Hub(s, history=history)
     app = create_app(s, hub, token)
     server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port, log_config=None,
                                            access_log=True, lifespan="off"))

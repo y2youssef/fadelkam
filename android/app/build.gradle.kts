@@ -32,4 +32,5 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.13.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.11.0")
+    testImplementation("junit:junit:4.13.2") // CounterTest: the counter state machine, on the laptop
 }

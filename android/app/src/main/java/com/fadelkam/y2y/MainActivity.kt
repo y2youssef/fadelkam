@@ -33,7 +33,13 @@ import com.google.firebase.database.DatabaseReference
 import com.google.firebase.database.ValueEventListener
 import kotlinx.coroutines.launch
 import java.security.SecureRandom
+import java.time.Instant
+import java.time.LocalDate
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
  * Pairing, the current reading, a captcha at full size, and the switches the sticky notification
@@ -43,6 +49,7 @@ import java.util.Locale
 class MainActivity : ComponentActivity() {
     private lateinit var reading: TextView
     private lateinit var details: TextView
+    private lateinit var usage: TextView
     private lateinit var status: TextView
     private lateinit var codeView: TextView
     private lateinit var pairBtn: Button
@@ -77,6 +84,62 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // ------------------------------------------------------------------ usage (laptop's /usage)
+    private val dailyQuery by lazy { Cloud.db.getReference("usage/daily").orderByKey().limitToLast(7) }
+    private val sessionsQuery by lazy { Cloud.db.getReference("usage/sessions").orderByKey().limitToLast(10) }
+    private var daily: List<Pair<String, Double>> = emptyList()
+    private var sessions: List<Triple<Long, Long?, Double>> = emptyList() // start, end (null: on), MB
+
+    private val dailyListener = object : ValueEventListener {
+        override fun onDataChange(s: DataSnapshot) {
+            daily = s.children.mapNotNull { d ->
+                val key = d.key ?: return@mapNotNull null
+                (d.child("used_mb").value as? Number)?.toDouble()?.let { key to it }
+            }
+            renderUsage()
+        }
+
+        override fun onCancelled(e: DatabaseError) = Unit
+    }
+
+    private val sessionsListener = object : ValueEventListener {
+        override fun onDataChange(s: DataSnapshot) {
+            sessions = s.children.mapNotNull { x ->
+                val start = x.key?.toLongOrNull() ?: return@mapNotNull null
+                val end = (x.child("end").value as? String)?.let {
+                    runCatching { OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull()
+                }
+                Triple(start, end, (x.child("used_mb").value as? Number)?.toDouble() ?: 0.0)
+            }.reversed()
+            renderUsage()
+        }
+
+        override fun onCancelled(e: DatabaseError) = Unit
+    }
+
+    /** Today, a bar per day for the last 7 days, and the last sessions. Days are Cairo days. */
+    private fun renderUsage() {
+        val zone = ZoneId.of("Africa/Cairo")
+        val today = LocalDate.now(zone).toString()
+        val sb = StringBuilder("Today: ${Notifier.mb(daily.firstOrNull { it.first == today }?.second ?: 0.0)}\n\n")
+        val max = (daily.maxOfOrNull { it.second } ?: 0.0).coerceAtLeast(1.0)
+        for ((day, mb) in daily) {
+            val label = LocalDate.parse(day).format(DateTimeFormatter.ofPattern("EEE d", Locale.US))
+            val bar = "█".repeat((mb / max * 14).roundToInt()).ifEmpty { if (mb > 0) "▏" else "" }
+            sb.append(String.format(Locale.US, "%-7s %-14s %6.0f MB\n", label, bar, mb))
+        }
+        if (sessions.isNotEmpty()) {
+            sb.append("\nSessions (WE data on → off)\n")
+            val day = DateTimeFormatter.ofPattern("EEE HH:mm", Locale.US).withZone(zone)
+            val time = DateTimeFormatter.ofPattern("HH:mm", Locale.US).withZone(zone)
+            for ((start, end, mb) in sessions) {
+                val e = end?.let { time.format(Instant.ofEpochMilli(it)) } ?: "now"
+                sb.append(String.format(Locale.US, "%s → %-5s %7.1f MB\n", day.format(Instant.ofEpochMilli(start)), e, mb))
+            }
+        }
+        usage.text = sb.toString()
+    }
+
     private val challengeListener = object : ValueEventListener {
         override fun onDataChange(s: DataSnapshot) {
             challengeId = s.child("id").value as? String
@@ -99,7 +162,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (Store.isPaired(this)) listen() else lifecycleScope.launch { connect() }
+        if (Store.isPaired(this)) {
+            listen()
+            Cellular.arm(this)                               // heal a lost trigger
+            Cellular.showIfWeData(this, "app opened")        // and show the counter if it's missing
+        } else {
+            lifecycleScope.launch { connect() }
+        }
     }
 
     override fun onResume() {
@@ -194,7 +263,7 @@ class MainActivity : ComponentActivity() {
         status.text = "Paired."
         registerForPush()
         Cellular.arm(this)
-        if (Cellular.isUp(this) && !QuotaService.running) QuotaService.start(this)
+        Cellular.showIfWeData(this, "paired")
         refreshBtn.isVisible = true
         listen()
         render()
@@ -217,6 +286,8 @@ class MainActivity : ComponentActivity() {
         Cloud.acquire()
         Cloud.db.getReference("state").addValueEventListener(stateListener)
         Cloud.db.getReference("challenge").addValueEventListener(challengeListener)
+        dailyQuery.addValueEventListener(dailyListener)
+        sessionsQuery.addValueEventListener(sessionsListener)
     }
 
     private fun unlisten() {
@@ -225,6 +296,8 @@ class MainActivity : ComponentActivity() {
         listening = false
         Cloud.db.getReference("state").removeEventListener(stateListener)
         Cloud.db.getReference("challenge").removeEventListener(challengeListener)
+        dailyQuery.removeEventListener(dailyListener)
+        sessionsQuery.removeEventListener(sessionsListener)
         Cloud.release()
     }
 
@@ -256,15 +329,18 @@ class MainActivity : ComponentActivity() {
     // ------------------------------------------------------------------ screen
     private fun render() {
         val s = Store.load(this)
-        reading.text = s.remainingMb?.let { "${Notifier.size(it)} left" } ?: "No reading yet"
+        reading.text = s.remainingMb?.let { "${Notifier.mb(it)} left" } ?: "No reading yet"
         val lines = mutableListOf<String>()
-        s.totalMb?.let { lines += "of ${Notifier.size(it)}" + (s.renewsInDays?.let { d -> ", renews in $d days" } ?: "") }
+        s.totalMb?.let { lines += "of ${Notifier.mb(it)} (${Notifier.size(it)})" + (s.renewsInDays?.let { d -> ", renews in $d days" } ?: "") }
         s.offer?.let { lines += it }
         s.fetchedAtMs?.let { lines += "Reading from ${Notifier.hhmm(it)}" }
         s.state?.let { lines += "Laptop: $it" + (s.error?.let { e -> " ($e)" } ?: "") }
         if (s.isStale()) lines += "No word from the laptop since ${s.heartbeatAtMs?.let(Notifier::hhmm)}"
-        lines += if (Cellular.isUp(this)) "Mobile data on: the counter is in your notifications"
-                 else "Mobile data off: the counter is hidden"
+        lines += when {
+            Cellular.isUp(this) -> "Using WE mobile data: the counter is in your notifications"
+            Cellular.cellularUp(this) -> "Mobile data is on the other SIM: the WE counter is hidden"
+            else -> "Mobile data off: the counter is hidden"
+        }
         details.text = lines.joinToString("\n")
 
         notifBtn.isVisible = !Notifier.canNotify(this)
@@ -292,6 +368,7 @@ class MainActivity : ComponentActivity() {
         text(22f, bold = true).text = "WE Quota"
         reading = text(34f, bold = true)
         details = text(16f)
+        usage = text(14f).apply { typeface = Typeface.MONOSPACE }
         status = text(15f)
         codeView = text(44f, bold = true).apply { letterSpacing = 0.2f; isVisible = false }
         pairBtn = button("Pair this phone") { pair() }
