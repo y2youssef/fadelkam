@@ -70,7 +70,8 @@ class MainActivity : ComponentActivity() {
 
     private val stateListener = object : ValueEventListener {
         override fun onDataChange(s: DataSnapshot) {
-            if (s.exists()) Store.save(this@MainActivity, QuotaState.fromSnapshot(s))
+            // Through the same path as pushes: the notification updates too (it didn't, 2026-11-20).
+            if (s.exists()) Store.receive(this@MainActivity, QuotaState.fromSnapshot(s))
             render()
         }
 

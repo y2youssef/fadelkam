@@ -24,10 +24,10 @@ class PushService : FirebaseMessagingService() {
 
     override fun onMessageReceived(m: RemoteMessage) {
         val d = m.data
+        Log.i(TAG, "push ${d["type"]}, sent ${(System.currentTimeMillis() - m.sentTime) / 1000} s ago")
         when (d["type"]) {
             "quota", "status" -> {
-                val s = Store.update(this) { it.withPush(d, m.sentTime) }
-                showIfMobileData(s)
+                val s = Store.receive(this, Store.load(this).withPush(d, m.sentTime))
                 when (s.state) {
                     "needs_human" -> Notifier.alert(this, "WE login blocked", s.error ?: "Check the laptop")
                     "login_failed" -> Notifier.alert(this, "WE login failed", s.error ?: "Check the laptop")
@@ -39,10 +39,6 @@ class PushService : FirebaseMessagingService() {
             else -> Log.i(TAG, "unknown push type ${d["type"]}")
         }
     }
-
-    /** The reading is in the store already; the counter's state machine decides whether it shows. */
-    private fun showIfMobileData(@Suppress("UNUSED_PARAMETER") s: QuotaState) =
-        QuotaService.send(this, Counter.Event.READING)
 
     private fun fetchChallenge(pushedId: String?) = runBlocking {
         runCatching {

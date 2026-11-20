@@ -104,11 +104,9 @@ class QuotaService : Service() {
         scope.launch {
             runCatching { Cloud.read("state") }
                 .onSuccess { snap ->
-                    if (snap.exists()) {
-                        val q = QuotaState.fromSnapshot(snap)
-                        Store.save(this@QuotaService, q)
-                        Notifier.showQuota(this@QuotaService, q)
-                    }
+                    // May come from Firebase's disk cache and be older than what a push brought:
+                    // Store.receive keeps the newer one.
+                    if (snap.exists()) Store.receive(this@QuotaService, QuotaState.fromSnapshot(snap))
                 }
                 .onFailure { Log.w(TAG, "first read failed; pushes will fill in", it) }
         }

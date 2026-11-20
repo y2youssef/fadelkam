@@ -12,12 +12,21 @@ object Store {
 
     fun load(c: Context): QuotaState = QuotaState.fromJson(prefs(c).getString("state", null))
 
-    fun save(c: Context, s: QuotaState) = synchronized(lock) { prefs(c).edit { putString("state", s.toJson()) } }
-
-    /** Read-modify-write as one step: pushes arrive on FCM's background thread while the service
-     *  and the app screen save on the main thread, and a plain load-then-save could drop one. */
-    fun update(c: Context, change: (QuotaState) -> QuotaState): QuotaState = synchronized(lock) {
-        change(load(c)).also { prefs(c).edit { putString("state", it.toJson()) } }
+    /**
+     * The one way new data enters, from a push, the service's first read or the app screen:
+     * merged by the never-backwards rule (QuotaState.newest) in one locked step (pushes arrive on
+     * FCM's thread, the rest on the main thread), and if it changed, the counter is told, so the
+     * notification follows whatever source saw the news first.
+     */
+    fun receive(c: Context, incoming: QuotaState): QuotaState {
+        val (next, changed) = synchronized(lock) {
+            val current = load(c)
+            val next = QuotaState.newest(current, incoming)
+            if (next != current) prefs(c).edit { putString("state", next.toJson()) }
+            next to (next != current)
+        }
+        if (changed) QuotaService.send(c, Counter.Event.READING)
+        return next
     }
 
     fun isPaired(c: Context): Boolean = prefs(c).getBoolean("paired", false)

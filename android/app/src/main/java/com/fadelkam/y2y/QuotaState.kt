@@ -49,6 +49,21 @@ data class QuotaState(
     }.toString()
 
     companion object {
+        /**
+         * Never backwards: an incoming state replaces the current one only if its reading isn't
+         * older (same reading: only if its sign of life isn't older). Seen 2026-11-20 14:26: after a
+         * restart Firebase's disk cache answered with an old /state (3,065 MB) and it overwrote the
+         * newer 3,048 MB a push had just delivered. The latest sign of life is kept either way.
+         */
+        fun newest(current: QuotaState, incoming: QuotaState): QuotaState {
+            val cur = current.fetchedAtMs
+            val inc = incoming.fetchedAtMs
+            val alive = maxOf(current.heartbeatAtMs ?: 0L, incoming.heartbeatAtMs ?: 0L).takeIf { it > 0 }
+            val older = (cur != null && inc != null && inc < cur) ||
+                (cur != null && inc == cur && (incoming.heartbeatAtMs ?: 0L) < (current.heartbeatAtMs ?: 0L))
+            return (if (older) current else incoming).copy(heartbeatAtMs = alive)
+        }
+
         fun fromJson(s: String?): QuotaState {
             val o = s?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return QuotaState()
             fun dbl(k: String): Double? = if (o.has(k)) o.optDouble(k).takeUnless { it.isNaN() } else null

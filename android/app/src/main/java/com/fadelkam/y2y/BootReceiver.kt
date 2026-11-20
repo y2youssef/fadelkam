@@ -9,6 +9,7 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
         if (i.action !in setOf(Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED)) return
         if (!Store.isPaired(c)) return
+        android.util.Log.i("QuotaBoot", "${i.action}: arming, weData=${Cellular.isUp(c)}")
         Cellular.arm(c)
         if (Cellular.isUp(c)) QuotaService.start(c)
     }
