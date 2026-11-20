@@ -201,7 +201,16 @@ Built 2026-11-19, not yet run on the phone. Details and the battery design: `and
 
 ## 6. Environment status
 
-### Laptop (CachyOS), the production host since 2026-11-19
+### Hand-over to the Windows PC (Docker), in progress since 2026-11-20 17:16 Cairo
+- The laptop service is **stopped and disabled** (`systemctl --user disable --now we-quota`, graceful stop
+  15:16:11 UTC). Nothing runs on the laptop; the phone shows "Laptop server stopped" until the PC starts.
+- Rehearsed on the laptop first: the container restored the live session from the copied `state/`
+  (no login), read in 2 s, Firebase and the phone inbox worked, healthy, stopped cleanly.
+- To carry to the PC privately (not on GitHub): `~/we-handover/we-state.tgz` (the final `state/`: browser
+  profile, session, login ledger, usage history, Firebase key) and `creds.txt`. Then server/README.md,
+  "Docker" (Windows notes). Last WE login: 2026-11-20 09:42:48 UTC.
+
+### Laptop (CachyOS), the production host 2026-11-19 → 2026-11-20 (retired)
 - Repo at `~/fadelkam`. Python **3.14.10**, venv at `server/.venv`, all pinned deps install, 77/77
   offline tests pass (`server/pytest.ini` puts `server/` on the import path so plain `pytest -q` works).
 - Google Chrome 158 at `/opt/google/chrome/chrome` → run with `--chrome` (bundled Chromium not installed).
