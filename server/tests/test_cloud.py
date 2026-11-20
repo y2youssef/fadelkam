@@ -95,7 +95,8 @@ class FakeFirebase:
             assert url.path == "/v1/projects/test/messages:send"
             msg = json.loads(request.content)["message"]
             self.fcm.append(msg)
-            status, body = self.fcm_status.get(msg["token"], (200, {"name": "projects/test/messages/1"}))
+            assert ("token" in msg) != ("fid" in msg)             # exactly one target
+            status, body = self.fcm_status.get(msg.get("token") or msg.get("fid"), (200, {"name": "projects/test/messages/1"}))
             return httpx.Response(status, json=body)
         assert request.headers["authorization"].startswith("Bearer ya29.")
         if self.redirect_to and url.host == HOST:
@@ -328,6 +329,44 @@ def test_push_policy(settings, fake):
         await pub.sync_push()                                   # within 2 min of the last one
         assert [m["data"]["remaining_mb"] for m in fake.fcm] == ["3946.78"]
         assert pub._wake is not None                            # ...so it's scheduled, not dropped
+    asyncio.run(go())
+
+
+def test_clean_stop_is_pushed_to_the_phone(settings, fake):
+    """The phone keeps no database connection open (battery), so "stopped" must also go out as a push."""
+    async def go():
+        paired(fake, "uidA")
+        hub, pub = make(settings, fake)
+        await pub.close("stopped")
+        assert fake.get("state")["status"]["state"] == "stopped"
+        assert [(m["data"]["type"], m["data"]["state"], m["android"]["priority"]) for m in fake.fcm] == \
+            [("status", "stopped", "NORMAL")]
+    asyncio.run(go())
+
+
+def test_push_goes_to_the_installation_id(settings, fake):
+    """The app registers its Firebase installation ID (firebase-messaging 25.1.0+). A phone that
+    only has a legacy token still gets its pushes by token."""
+    async def go():
+        fake.tree["allowed"] = {"uidF": {"at": 1}, "uidT": {"at": 1}}
+        fake.tree["devices"] = {"uidF": {"fid": "fid-uidF", "at": 1}, "uidT": {"fcm": "tok-uidT", "at": 1},
+                                "stranger": {"fid": "fid-x", "at": 1}}
+        hub, pub = make(settings, fake)
+        assert await pub.send_test_push() == 2
+        targets = sorted((("fid", m["fid"]) if "fid" in m else ("token", m["token"])) for m in fake.fcm)
+        assert targets == [("fid", "fid-uidF"), ("token", "tok-uidT")]   # never the unpaired one
+    asyncio.run(go())
+
+
+def test_dead_installation_id_is_dropped(settings, fake):
+    """FCM answers an unknown FID with 404 NotRegistered (checked live with validate_only)."""
+    async def go():
+        fake.tree["allowed"] = {"uidF": {"at": 1}}
+        fake.tree["devices"] = {"uidF": {"fid": "fid-uidF", "at": 1}}
+        fake.fcm_status["fid-uidF"] = (404, {"error": {"code": 404, "message": "NotRegistered", "status": "NOT_FOUND"}})
+        hub, pub = make(settings, fake)
+        assert await pub.send_test_push() == 0
+        assert fake.get("devices/uidF") is None
     asyncio.run(go())
 
 

@@ -7,6 +7,7 @@ logins about a minute apart, and a login 45 s after another got the account lock
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import timedelta
 
 import pytest
@@ -116,7 +117,8 @@ def test_session_gone_between_polls_holds_the_relogin(settings):
     """Logged in at one poll, cookie gone at the next (e.g. the phone logged in meanwhile)."""
     g = logged_in_guard(settings)
     c, logins = make_client(settings, g, url=BASE + "#/accountoverview", cookie=True)
-    asyncio.run(c.ensure_logged_in())             # poll N: logged in
+    asyncio.run(c.ensure_logged_in())             # poll N: logged in...
+    c._worked_at = utcnow()                       # ...and it read the quota
     c.ctx.cookie, c.page.url = False, BASE + "#/login"
     with pytest.raises(LoginBlockedByGuard, match="another device"):
         asyncio.run(c.ensure_logged_in())         # poll N+1: no instant re-login
@@ -127,6 +129,7 @@ def test_redirect_to_login_mid_fetch_holds_the_relogin(settings):
     g = logged_in_guard(settings)
     c, _ = make_client(settings, g, url=BASE + "#/accountoverview", cookie=True)
     asyncio.run(c.ensure_logged_in())
+    c._worked_at = utcnow() - timedelta(minutes=3)  # the last reading, one poll ago
     c._session_lost("redirected_to_login")        # what fetch_via_route does on the redirect
     with pytest.raises(LoginBlockedByGuard):
         g.check()
@@ -138,3 +141,43 @@ def test_first_login_of_a_process_is_not_held(settings):
     c, logins = make_client(settings, g, url="about:blank", cookie=False)
     asyncio.run(c.ensure_logged_in())
     assert logins == [1] and g.d.get("relogin_after") is None
+
+
+# ---------------------------------------------------------------- expired unused (#55, 2026-11-20)
+def write_last_reading(settings, ago: timedelta) -> None:
+    (settings.state_dir / "last_quota.json").write_text(json.dumps({"fetched_at": iso(utcnow() - ago)}))
+
+
+def test_session_that_died_while_the_laptop_was_off_is_not_held(settings):
+    """Morning of 2026-11-20: Chrome restored the cookie WE had expired overnight, the page bounced
+    to #/login, and the 10 min hold kicked in though nobody had logged in anywhere."""
+    g = logged_in_guard(settings)
+    write_last_reading(settings, timedelta(hours=16))     # last reading: last evening
+    c, logins = make_client(settings, g, url=BASE + "#/", cookie=True)
+    asyncio.run(c.ensure_logged_in())                     # the restored cookie looks like a session
+    c._session_lost("redirected_to_login")                # ...until the first fetch bounces
+    g.check()                                             # no hold: log in right away
+    s = g.d["sessions"][-1]
+    assert g.d.get("relogin_after") is None and s["end_reason"] == "redirected_to_login"
+    assert s["lifetime_lower_bound"] is True              # it lived at least until the last reading
+    assert 3 * 3600 < s["lifetime_s"] < 5 * 3600          # login 20 h ago, last seen 16 h ago
+
+
+def test_restart_right_after_a_kick_is_still_held(settings):
+    """The phone logs in, our service restarts a minute later: the reading on disk is recent, so
+    the lost session counts as taken from us and the hold applies."""
+    g = logged_in_guard(settings)
+    write_last_reading(settings, timedelta(minutes=2))
+    c, logins = make_client(settings, g, url=BASE + "#/", cookie=True)
+    asyncio.run(c.ensure_logged_in())
+    c._session_lost("redirected_to_login")
+    with pytest.raises(LoginBlockedByGuard, match="another device"):
+        g.check()
+
+
+def test_no_reading_ever_is_not_held(settings):
+    g = logged_in_guard(settings)
+    c, _ = make_client(settings, g, url=BASE + "#/", cookie=True)
+    asyncio.run(c.ensure_logged_in())
+    c._session_lost("redirected_to_login")
+    g.check()

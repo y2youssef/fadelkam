@@ -108,9 +108,8 @@ python -m app.probe reset     # clear a hard stop after a human checked why it h
 python -m app.probe page      # load the login page only: WAF / selectors / build id
 ```
 
-`page`, `login` and `session` open the browser, so stop the service first. `reset` with the
-service running only changes the file: the server keeps its own copy of the ledger in memory,
-so do stop, reset, start.
+`page`, `login` and `session` open the browser, so stop the service first. `reset` refuses while
+the service runs (the server keeps its own copy of the ledger in memory): stop, reset, start.
 
 Evidence lives in `state/` (private, git-ignored): `logs/scraper.jsonl` (events),
 `logs/api.jsonl` (every portal call), `incidents/<time>_<kind>/` (screenshot, HTML, API

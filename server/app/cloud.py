@@ -303,9 +303,12 @@ class Fcm:
         self.auth = auth
         self.http = http
 
-    async def send(self, token: str, data: dict[str, str], *, high: bool, collapse_key: str, ttl_s: int) -> str:
-        """'ok' or 'unregistered' (token is dead: forget it). Other failures raise CloudError."""
-        msg = {"message": {"token": token, "data": data,
+    async def send(self, target: dict[str, str], data: dict[str, str], *, high: bool, collapse_key: str,
+                   ttl_s: int) -> str:
+        """target: {"fid": <Firebase installation ID>} (firebase-messaging 25.1.0+, what the app
+        registers) or {"token": <registration token>} (deprecated, still accepted).
+        'ok' or 'unregistered' (dead id/token: forget it). Other failures raise CloudError."""
+        msg = {"message": {**target, "data": data,
                            "android": {"priority": "HIGH" if high else "NORMAL", "collapse_key": collapse_key,
                                        "ttl": f"{int(ttl_s)}s"}}}
         retried_auth = False
@@ -321,7 +324,7 @@ class Fcm:
                 self.auth.invalidate()
                 retried_auth = True
                 continue
-            if r.status_code == 404 or "UNREGISTERED" in r.text or (
+            if r.status_code == 404 or "UNREGISTERED" in r.text.upper() or (
                     r.status_code == 400 and "registration token" in r.text.lower()):
                 return "unregistered"
             raise CloudHttpError("FCM send", r.status_code, r.text)
@@ -430,6 +433,12 @@ class CloudPublisher:
                 event(log, logging.INFO, "cloud.final_state_written", state=final_state)
             except (CloudError, asyncio.TimeoutError) as e:
                 event(log, logging.WARNING, "cloud.final_state_failed", error=short(str(e)))
+            # The phone keeps no connection open (battery); it learns everything from pushes.
+            try:
+                await asyncio.wait_for(self._push_all({"type": "status", "state": final_state}, high=False,
+                                                      collapse="status", ttl_s=6 * 3600), 5)
+            except (CloudError, asyncio.TimeoutError) as e:
+                event(log, logging.WARNING, "cloud.final_push_failed", error=short(str(e)))
         if self._wake:
             self._wake.cancel()
         if self._own_http:
@@ -548,14 +557,22 @@ class CloudPublisher:
                                  high=False, collapse="quota", ttl_s=6 * 3600)
             self._pushed_mb, self._pushed_at = q.get("remaining_mb"), time.monotonic()
 
-    async def _get_devices(self) -> dict[str, str]:
+    async def _get_devices(self) -> dict[str, dict[str, str]]:
+        """Paired phones -> FCM target. The app registers its Firebase installation ID (`fid`);
+        a legacy registration token (`fcm`) is still used if that's all a phone has."""
         if self._devices is None or time.monotonic() - self._devices_at > self.cfg.devices_cache_s:
             allowed = await self.db.get("allowed") or {}
             devs = await self.db.get("devices") or {}
-            self._devices = {uid: d["fcm"] for uid, d in devs.items()
-                             if uid in allowed and isinstance(d, dict) and isinstance(d.get("fcm"), str)}
-            for tok in self._devices.values():
-                REDACT.add(tok, "fcm_token", keep_last=6)
+            self._devices = {}
+            for uid, d in devs.items():
+                if uid not in allowed or not isinstance(d, dict):
+                    continue
+                if isinstance(d.get("fid"), str) and d["fid"]:
+                    self._devices[uid] = {"fid": d["fid"]}
+                elif isinstance(d.get("fcm"), str) and d["fcm"]:
+                    self._devices[uid] = {"token": d["fcm"]}
+            for target in self._devices.values():
+                REDACT.add(next(iter(target.values())), "push_id", keep_last=6)
             self._devices_at = time.monotonic()
         return self._devices
 
@@ -567,12 +584,12 @@ class CloudPublisher:
         """Returns the number of phones the message went to."""
         devices = await self._get_devices()
         if not devices:
-            event(log, logging.DEBUG, "cloud.push_skipped", type=data["type"], reason="no paired phone with a push token")
+            event(log, logging.DEBUG, "cloud.push_skipped", type=data["type"], reason="no paired phone with a push id")
             return 0
         payload = {k: str(v) for k, v in data.items() if v is not None}
         sent = 0
-        for uid, tok in list(devices.items()):
-            if await self.fcm.send(tok, payload, high=high, collapse_key=collapse, ttl_s=ttl_s) == "unregistered":
+        for uid, target in list(devices.items()):
+            if await self.fcm.send(target, payload, high=high, collapse_key=collapse, ttl_s=ttl_s) == "unregistered":
                 await self.db.delete(f"devices/{uid}")
                 devices.pop(uid, None)
                 event(log, logging.WARNING, "cloud.device_token_dropped", device=uid[:6])

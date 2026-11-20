@@ -4,6 +4,7 @@ Seen 2026-11-19 under systemd: SIGTERM killed the server right after "Finished s
 Runs a real uvicorn server in a subprocess on a random local port (no network)."""
 from __future__ import annotations
 
+import asyncio
 import signal
 import subprocess
 import sys
@@ -63,3 +64,33 @@ def test_without_the_fix_sigterm_skips_cleanup():
     r = run("SIGTERM", absorb=False)
     assert "cleanup ran" not in r.stdout
     assert r.returncode == -signal.SIGTERM
+
+
+# ---------------------------------------------------------------- supervision of background tasks
+class FakeServer:
+    should_exit = False
+
+
+def test_a_background_task_that_dies_stops_the_server():
+    """A poller that died silently would leave the server up with a frozen reading."""
+    from app.server import supervise
+
+    async def go():
+        srv, died = FakeServer(), []
+
+        async def buggy():
+            raise RuntimeError("a bug escaped every handler")
+        t = asyncio.create_task(buggy(), name="poller")
+        supervise(srv, [t], died)
+        await asyncio.gather(t, return_exceptions=True)
+        await asyncio.sleep(0)
+        assert srv.should_exit and died == ["poller"]
+
+        srv2, died2 = FakeServer(), []                       # a normal shutdown cancels the tasks
+        t2 = asyncio.create_task(asyncio.sleep(30), name="cloud")
+        supervise(srv2, [t2], died2)
+        t2.cancel()
+        await asyncio.gather(t2, return_exceptions=True)
+        await asyncio.sleep(0)
+        assert not srv2.should_exit and died2 == []
+    asyncio.run(go())

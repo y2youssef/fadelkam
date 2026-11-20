@@ -20,7 +20,9 @@ _Last updated: 2026-11-19_
 | **Login automation** | **Fully automatic headless** login via real browser (Playwright). WE "sometimes asks SMS/captcha" → build a human-in-the-loop fallback |
 | **Robustness** | **Robust from the start**: token refresh, retries/backoff, logging, graceful captcha/SMS handling |
 | **APK delivery** | Set up the Android toolchain **on this PC** and build a ready-to-sideload debug APK |
-| **Target phone** | **Samsung, Android 15 (One UI 7)** — aggressive background-kill; needs foreground service + battery-optimization exemption |
+| **Target phone** | **Samsung, Android 17 (One UI 9)** (corrected 2026-11-19; the plan said Android 15). Aggressive background-kill: battery exemption asked for. Compile/target SDK 37 |
+| **Phone battery** | Owner's requirement (2026-11-19): follow Android's Doze/battery/CPU/memory guidance. Pushes instead of polling or open connections; nothing of ours runs while mobile data is off |
+| **When the counter shows** | Owner's requirement (2026-11-19): only while mobile data is on; it hides when mobile data goes off. Shown as a Live Update (status bar chip, One UI Now Bar) |
 
 ---
 
@@ -84,13 +86,14 @@ _Last updated: 2026-11-19_
 └───────────────────────────────────────────────────────────────────────────────────┘
                               │ Firebase (free Spark plan)
                               ▼
-┌──────────────── Samsung phone (Android 15 / One UI 7) ─────────────────┐
-│  Thin APK:                                                             │
+┌──────────────── Samsung phone (Android 17 / One UI 9) ─────────────────┐
+│  Thin APK (android/):                                                  │
 │   • Pairing: anonymous sign-in, shows a 6-digit code, laptop approves  │
-│   • ONE ongoing/sticky notification, updated in place                  │
-│   • Live /state listener while the screen is on; FCM wakes it when not │
+│   • Mobile data on → system wakes us (PendingIntent network callback)  │
+│     → foreground service shows ONE Live Update, updated by FCM pushes  │
+│   • Mobile data off for 30 s → notification removed, service stops    │
+│   • No polling, timers, wakelocks or open DB socket; one-off reads     │
 │   • Captcha: notification with the image → reply → /inbox/<uid>/answer│
-│   • "Updated N min ago" / "laptop offline" from the heartbeat          │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -154,17 +157,26 @@ _Last updated: 2026-11-19_
 - [ ] `.env.example`, `requirements.txt` (pinned).
 
 ### 4.4 Android app (`android/`, package `com.fadelkam.y2y`, as registered in Firebase; `android/app/google-services.json` is in place)
-- [ ] Kotlin project, minSdk 26, targetSdk 35 (Android 15). Firebase BoM: Auth, Realtime Database, Messaging.
-- [ ] Pairing screen: anonymous sign-in → write `/pairing/<uid>` with a 6-digit code → wait for `/allowed/<uid>`.
-- [ ] Register the FCM token at `/devices/<uid>` (and on `onNewToken`); write `/inbox/<uid>/hello`.
-- [ ] Single ongoing notification, updated in place: remaining / total, "updated N min ago",
-  greyed out when the heartbeat is older than ~2.5 × `heartbeat_s`, "server stopped" on `stopped`.
-- [ ] `/state` listener only while the screen is on (saves data); FCM data messages update the
-  notification when it's off.
-- [ ] Captcha: high-priority notification with the image (from `/challenge`) and a reply action →
-  `/inbox/<uid>/answer` with `ServerValue.TIMESTAMP`.
-- [ ] Refresh action → `/inbox/<uid>/refresh`.
-- [ ] Runtime `POST_NOTIFICATIONS` permission (Android 13+); battery-optimization exemption prompt (One UI 7).
+Built 2026-11-19, not yet run on the phone. Details and the battery design: `android/README.md`.
+- [x] Kotlin, compile/target SDK 37, minSdk 26; AGP 9.5.1, Kotlin 2.4.21, Gradle 9.9.1 (wrapper,
+  checksum-pinned); Firebase BoM 35.2.0 (Auth, Realtime Database, Messaging). Debug APK builds clean.
+- [x] Pairing screen: anonymous sign-in → `/pairing/<uid>` with a 6-digit code → waits for `/allowed/<uid>`.
+- [x] FCM by Firebase installation ID: `register()` → `fid` at `/devices/<uid>` (again on `onRegistered`);
+  `/inbox/<uid>/hello`. Server sends to `fid`, legacy `fcm` tokens still work (2026-11-20).
+- [x] Live Update (promoted ongoing notification, Android 16+): remaining / total, renewal, the
+  reading's time, a status bar chip (`3.5 GB`), problems ("laptop server stopped", "login blocked"…).
+  Falls back to a normal ongoing notification. Put back if swiped away while data is on.
+- [x] Shown only while mobile data is on: `PendingIntent` network callback wakes us when cellular
+  comes up; `QuotaService` (specialUse FGS) hides and stops 30 s after it goes down.
+- [x] Battery: FCM pushes update it (Doze-friendly normal priority; high only for a human). No
+  polling, timers, wakelocks; the DB socket only for one-off reads/writes or while the app is open.
+- [x] Captcha: high-priority notification with the image and an inline reply → `/inbox/<uid>/answer`;
+  also full size in the app.
+- [x] Refresh action → `/inbox/<uid>/refresh`. Server pushes `stopped` on a clean stop.
+- [x] Prompts: `POST_NOTIFICATIONS`, battery exemption (also lets the service start when data comes
+  up), Live Updates setting.
+- [ ] Install on the phone, pair, end-to-end test (captcha, data on/off, reboot, Doze).
+- [x] Moved off the deprecated FCM tokens to Firebase installation IDs (checked against the live API, FAILURE_MODES #52).
 
 ---
 
@@ -213,7 +225,7 @@ _Last updated: 2026-11-19_
 - **Docker: not installed** → need Docker Desktop (or test the scraper on the VPS directly).
 - **Android: no SDK, no Gradle, only JDK 8** → need **JDK 17 + Android cmdline-tools + platform-35 +
   build-tools + Gradle** to build the APK.
-- Phone: **Samsung / Android 15**.
+- Phone: **Samsung / Android 17 (One UI 9)**.
 
 ---
 
@@ -231,9 +243,9 @@ _Last updated: 2026-11-19_
 3. ~~Local API + SSE + captcha relay~~: done (now for development).
 4. ~~Cloud relay (Firebase)~~: done 2026-11-19 (project `fadelkam-y2y`).
 5. ~~Move to the laptop~~ (CachyOS): venv, creds, systemd service, Firebase key: done 2026-11-19.
-6. **Android toolchain** on the laptop (JDK 17, Android SDK platform 35, Gradle).
-7. **Thin APK** (4.4): pairing, FCM, sticky notification, captcha reply.
-8. **End-to-end test** on the Samsung phone; tune One UI 7 battery settings.
+6. ~~Android toolchain~~ on the laptop: done 2026-11-19 (`~/Android`: JDK 21, SDK, platform 37).
+7. ~~Thin APK~~ (4.4): built 2026-11-19.
+8. **End-to-end test** on the Samsung phone; tune One UI 9 battery settings.
 9. Later, optional: Docker image; OCR captcha with a confidence gate if captchas turn out frequent.
 
 ---
@@ -243,4 +255,5 @@ _Last updated: 2026-11-19_
 - [x] Stop the server on the old PC **at least 10 min** before the laptop's first login (done 2026-11-19).
 - [ ] Owner, optional: install `server/systemd/logind-lid-on-ac.conf` (root) so the lid doesn't
       suspend at the login screen while plugged in.
-- [ ] Android toolchain on the laptop, then the APK.
+- [x] Android toolchain on the laptop, then the APK (2026-11-19).
+- [ ] Install the APK on the phone (USB or wireless debugging), pair, end-to-end test.

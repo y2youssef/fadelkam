@@ -244,3 +244,21 @@ def test_creds_misspelt_label_refused(text):
     with pytest.raises(ValueError, match=r"creds line \d") as e:
         _parse_creds_text(text)
     assert "s3cret" not in str(e.value) and "pas" not in str(e.value).split("label")[0]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="flock")
+def test_probe_reset_refuses_while_the_service_runs(tmp_path, monkeypatch):
+    """The running server keeps its own copy of the ledger; a reset underneath it would be
+    overwritten or race its next write (FAILURE_MODES #47)."""
+    import asyncio
+    from app.files import InstanceLock
+    from app.probe import main_async
+    monkeypatch.setenv("WE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("WE_PHONE", "01512345678")
+    monkeypatch.setenv("WE_PASSWORD", "pw-for-tests")
+    service = InstanceLock(tmp_path)
+    service.acquire()
+    with pytest.raises(SystemExit, match=f"pid {os.getpid()}"):
+        asyncio.run(main_async(["reset"]))
+    service.release()
+    assert asyncio.run(main_async(["reset"])) == 0      # stopped service: reset works

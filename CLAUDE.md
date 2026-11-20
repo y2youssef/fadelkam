@@ -13,8 +13,8 @@ evidence is) before changing behaviour.
   refused as "max attempts" and locked the account for an hour.
 - Don't restart the server within ~1 min of a login: Chrome writes the session cookie to disk late.
 - A guard hard stop means a human checks why first (`python -m app.probe status`, the incident
-  folder), and only then runs `probe reset`, with the service stopped (the running server keeps
-  its own copy of the ledger in memory).
+  folder), and only then runs `probe reset`, with the service stopped (it refuses otherwise: the running
+  server keeps its own copy of the ledger in memory).
 - On the laptop the server runs as the systemd user service `we-quota` (starts at boot). Don't run
   `python -m app.server` or a browser probe next to it; they refuse anyway (`state/instance.lock`).
   Stop the service first, and keep restarts more than 1 min away from a login.

@@ -17,6 +17,7 @@ import os
 import secrets
 import signal
 import sys
+import traceback
 
 import uvicorn
 
@@ -44,6 +45,24 @@ def absorb_reraised_signals(server: uvicorn.Server) -> None:
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, stop)
+
+
+def supervise(server: uvicorn.Server, tasks: list[asyncio.Task], died: list[str]) -> None:
+    """The poller and the uploader must live as long as the server. Each catches its own errors,
+    but if one ever ends anyway (a bug escaped every handler), a server that keeps running would
+    serve a frozen reading with nothing in the log. Instead: log it loudly and stop with a failure,
+    so systemd restarts the whole process (RestartSec=120 keeps that clear of a fresh login)."""
+    def done(t: asyncio.Task) -> None:
+        if t.cancelled() or server.should_exit:  # a normal shutdown
+            return
+        exc = t.exception()
+        event(log, logging.CRITICAL, "server.task_died", task=t.get_name(),
+              error="".join(traceback.format_exception(exc)) if exc else "returned without error")
+        died.append(t.get_name())
+        server.should_exit = True
+
+    for t in tasks:
+        t.add_done_callback(done)
 
 
 def ensure_token(s: Settings) -> str:
@@ -95,16 +114,18 @@ async def main_async(argv: list[str]) -> int:
             tasks.append(asyncio.create_task(cloud.run(), name="cloud"))
         event(log, logging.INFO, "server.start", host=args.host, port=args.port, cloud=bool(cloud))
         absorb_reraised_signals(server)
+        died: list[str] = []
+        supervise(server, tasks, died)
         try:
-            await server.serve()  # returns on SIGINT/SIGTERM
+            await server.serve()  # returns on SIGINT/SIGTERM, or when a background task died
         finally:
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             if cloud:
                 await cloud.close("stopped")  # the phone shows "server stopped", not "laptop silent"
-            event(log, logging.INFO, "server.stop")
-    return 0
+            event(log, logging.INFO, "server.stop", failed_tasks=died or None)
+    return 1 if died else 0  # 1: systemd restarts us (Restart=on-failure, after RestartSec)
 
 
 def main() -> None:

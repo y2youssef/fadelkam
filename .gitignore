@@ -18,6 +18,7 @@ __pycache__/
 # node / android
 node_modules/
 android/.gradle/
+android/.kotlin/
 android/build/
 android/app/build/
 android/local.properties

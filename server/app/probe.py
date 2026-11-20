@@ -25,6 +25,7 @@ from pathlib import Path
 from .config import Settings, add_browser_flags, apply_browser_flags, load_credentials, load_settings
 from .diagnostics import save_incident
 from .errors import WeError
+from .files import InstanceLock
 from .hub import code_file, take_code_file
 from .login_guard import LoginGuard
 from .logs import REDACT, event, get_logger, setup_logging
@@ -169,8 +170,16 @@ async def main_async(argv: list[str]) -> int:
         print(json.dumps(guard.status(), indent=1))
         return 0
     if args.cmd == "reset":
-        guard.reset(clear_lock=args.clear_lock)
-        print(json.dumps(guard.status(), indent=1))
+        # Refuse while the service runs: it keeps its own copy of the ledger in memory, so a reset
+        # underneath it would be overwritten or race its next write (FAILURE_MODES #47).
+        lock = InstanceLock(s.state_dir)
+        lock.acquire()
+        try:
+            guard = LoginGuard(s, creds.fingerprint)  # re-read under the lock
+            guard.reset(clear_lock=args.clear_lock)
+            print(json.dumps(guard.status(), indent=1))
+        finally:
+            lock.release()
         return 0
 
     for w in creds.warnings():

@@ -9,6 +9,46 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:  # Windows: the lock isn't enforced there
+    fcntl = None
+
+
+class InstanceLock:
+    """One process at a time may change state/: the server, a poller, a browser probe, or
+    `probe reset`. Two browsers would share the profile, and two writers would each keep their own
+    copy of the login ledger, so the min gap between logins wouldn't hold (FAILURE_MODES #46, #47).
+    flock: the OS drops the lock when the process dies, so a crash never leaves it stuck."""
+
+    def __init__(self, state_dir: Path) -> None:
+        self.state_dir = state_dir
+        self._f = None
+
+    def acquire(self) -> None:
+        """Raises SystemExit (with the holder's pid) if another process holds it."""
+        if fcntl is None or self._f:
+            return
+        self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        f = open(self.state_dir / "instance.lock", "a+", encoding="utf-8")
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            f.seek(0)
+            holder = f.read().strip() or "?"
+            f.close()
+            raise SystemExit(f"another server/poller/probe (pid {holder}) is using {self.state_dir}. "
+                             "Stop it first (systemctl --user stop we-quota).") from None
+        f.truncate(0)
+        f.write(f"{os.getpid()}\n")
+        f.flush()
+        self._f = f
+
+    def release(self) -> None:
+        if self._f:
+            self._f.close()
+            self._f = None
+
 
 def write_private(path: Path, text: str) -> None:
     """Replace `path` with `text` atomically, mode 0600; creates the folder (0700) if missing."""

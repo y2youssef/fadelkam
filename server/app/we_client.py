@@ -15,16 +15,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import random
 import re
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
-
-try:
-    import fcntl
-except ImportError:  # Windows
-    fcntl = None
 from typing import Any, Awaitable, Callable
 
 from playwright.async_api import Error as PlaywrightError
@@ -35,8 +30,8 @@ from .config import Credentials, Settings
 from .diagnostics import ApiRecorder, save_incident
 from .errors import (AccountLocked, ApiError, ChallengeRequired, PortalChanged, SessionExpired, TransientError,
                      WafBlocked, WeError, classify_login_failure)
-from .files import write_private
-from .logs import REDACT, event, get_logger
+from .files import InstanceLock, write_private
+from .logs import REDACT, event, get_logger, iso, utcnow
 from .login_guard import LoginGuard
 
 log = get_logger("client")
@@ -79,7 +74,8 @@ class WeClient:
         self._saved_cookies: str | None = None
         self._quota_miss_streak = 0
         self._had_session = False  # seen logged in by this process since the last loss
-        self._instance_lock = None
+        self._worked_at: datetime | None = None  # last time the session gave us data (this process)
+        self._instance_lock = InstanceLock(settings.state_dir)
         REDACT.add(creds.password, "password")
         REDACT.add(creds.phone, "phone", keep_last=3)
 
@@ -97,32 +93,15 @@ class WeClient:
         return keep
 
     def _take_instance_lock(self) -> None:
-        """One WeClient per state folder (server, poller or probe). Two would share the browser
-        profile (start() even clears Chrome's profile lock) and each keep its own in-memory copy
-        of the login ledger, so the min gap between logins would not hold across them.
-        The OS drops the lock when the process dies, so a crash never leaves it stuck."""
-        if fcntl is None:  # Windows: not enforced
-            return
-        self.s.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        f = open(self.s.state_dir / "instance.lock", "a+", encoding="utf-8")
+        """One WeClient per state folder (start() even clears Chrome's profile lock): see InstanceLock."""
         try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            f.seek(0)
-            holder = f.read().strip() or "?"
-            f.close()
-            event(log, logging.ERROR, "client.already_running", holder_pid=holder)
-            raise SystemExit(f"another server/poller/probe (pid {holder}) is using {self.s.state_dir}. "
-                             "Stop it first (systemctl --user stop we-quota).") from None
-        f.truncate(0)
-        f.write(f"{os.getpid()}\n")
-        f.flush()
-        self._instance_lock = f
+            self._instance_lock.acquire()
+        except SystemExit as e:
+            event(log, logging.ERROR, "client.already_running", error=str(e))
+            raise
 
     def _release_instance_lock(self) -> None:
-        if self._instance_lock:
-            self._instance_lock.close()
-            self._instance_lock = None
+        self._instance_lock.release()
 
     async def start(self) -> None:
         self._take_instance_lock()
@@ -170,7 +149,7 @@ class WeClient:
         self.page.on("load", lambda _p: self._on_load())  # real document loads only, not hash routes
         self._on_load()  # a restored tab loaded moments ago; never leave the age unknown
         await self._restore_session_cookies()
-        restored = await self.has_session_token()
+        restored = await self._session_after_start()
         if restored:
             self.guard.resume_session()
         else:
@@ -179,6 +158,29 @@ class WeClient:
             self.guard.end_session("process_restart", expired=False)
         event(log, logging.INFO, "browser.started", channel=self.s.browser_channel or "bundled-chromium",
               session_restored=restored, headless=self.s.headless, user_agent=ua, profile=str(self.s.profile_dir))
+
+    async def _session_after_start(self) -> bool:
+        """Did the browser bring a session back? Without a network (seen at boot on 2026-11-20:
+        DNS down until the Wi-Fi joined) the check can't load the portal; that used to escape
+        start() and crash the server every 2 min (FAILURE_MODES #54). Decide by the cookie alone
+        then; the poller finds out the rest once the network is back."""
+        try:
+            return await self.has_session_token()
+        except TransientError as e:
+            event(log, logging.WARNING, "browser.start_offline", error=str(e)[:200])
+            return any(c["name"] == SESSION_COOKIE and c["value"] and "te.eg" in c["domain"]
+                       for c in await self.ctx.cookies())
+
+    async def _fresh_login_page(self) -> None:
+        """Open the login form in a new document. goto() to a #route of the document already open
+        is only a hash change, so the form would come from an old page: the refused login on
+        2026-11-20 was submitted from a page 10 min old, while the logins that worked came from
+        fresh ones (FAILURE_MODES #53). Reloading costs a second and removes that difference."""
+        reuse = self.page.url.startswith(self.s.base_url)
+        await self.page.goto(self.s.login_url, wait_until="domcontentloaded")
+        if reuse:
+            event(log, logging.INFO, "login.page_reloaded", reason="portal page was already open")
+            await self.page.reload(wait_until="domcontentloaded")
 
     async def _clean_user_agent(self) -> str | None:
         if not self.s.headless:
@@ -322,13 +324,15 @@ class WeClient:
 
         # --- phase 1: reach the form (nothing submitted yet -> not an attempt)
         try:
-            await page.goto(self.s.login_url, wait_until="domcontentloaded")
+            await self._fresh_login_page()
             await self._check_waf()
             await page.wait_for_selector(SEL["login_id"], state="visible")
         except WafBlocked as e:
             e.incident = await save_incident(self.s, "waf_blocked", page=page, recorder=self.recorder, error=e)
             raise
         except (PlaywrightTimeout, PlaywrightError) as e:
+            if "net::ERR_" in str(e):  # no network (DNS down, offline): retry later, the portal is fine
+                raise TransientError(f"login page not reachable: {str(e)[:200]}") from e
             # The SPA sends a logged-in browser from #/login to a member page (seen: #/accountoverview).
             # That alone proves the session is alive, whatever the storage heuristics say.
             if not self._on_login_page() and self.page.url.startswith(self.s.base_url):
@@ -375,6 +379,7 @@ class WeClient:
 
         if err is None:
             self.guard.end_attempt(attempt, "success")
+            self._worked_at = utcnow()
             await self._register_tokens()
             event(log, logging.INFO, "login.success", seconds=round(time.monotonic() - t0, 1), url=page.url)
             # Let the landing page finish loading the subscriber context (querySubscribers etc.).
@@ -417,7 +422,8 @@ class WeClient:
             self.antidebug_hits += "console" in dialog.message.lower()
             event(log, logging.WARNING, "portal.dialog", message=dialog.message[:200], type=dialog.type,
                   antidebug_hits=self.antidebug_hits)
-            asyncio.ensure_future(dialog.dismiss())
+            # Collect the result, so a failed dismiss (page already gone) isn't an unhandled task error.
+            asyncio.ensure_future(dialog.dismiss()).add_done_callback(lambda f: f.cancelled() or f.exception())
 
         def on_console(msg) -> None:
             if "DEVTOOL" in msg.text:
@@ -582,14 +588,34 @@ class WeClient:
         self._had_session = True
 
     def _session_lost(self, reason: str) -> None:
-        """WE ended the session under us. The guard then holds logins back for a while, because
-        another device logging in is one way this happens (FAILURE_MODES #7)."""
+        """WE ended the session under us. If it gave us data a moment ago, another device may
+        have just logged in (FAILURE_MODES #7), so the guard holds logins back for a while (#45).
+        If it last worked long ago (laptop off or asleep overnight), it simply expired unused and
+        holding back only costs 10 min of data every morning (seen 2026-11-20, #55)."""
         if self._had_session:
-            self.guard.session_lost(reason)
+            last = self._last_worked_at()
+            if last and utcnow() - last <= timedelta(seconds=self.s.session_recent_s):
+                self.guard.session_lost(reason)
+            else:
+                event(log, logging.INFO, "session.expired_unused", reason=reason,
+                      last_worked=iso(last) if last else None)
+                self.guard.end_session(reason, last_seen=last)
         else:  # never confirmed logged in by this process: nothing was taken from us
             self.guard.end_session(reason)
         self._had_session = False
         self.forget_session_cookies()
+
+    def _last_worked_at(self) -> datetime | None:
+        """When the session last gave us data: in this process, or else the last reading on disk
+        (so a restart right after a kick still counts as recent)."""
+        seen = [self._worked_at]
+        try:
+            seen.append(datetime.fromisoformat(
+                json.loads((self.s.state_dir / "last_quota.json").read_text(encoding="utf-8"))["fetched_at"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        seen = [t for t in seen if t is not None]
+        return max(seen) if seen else None
 
     # ------------------------------------------------------------------ data calls
     def _on_load(self) -> None:
@@ -619,6 +645,7 @@ class WeClient:
             raise TransientError(f"{e} [miss {n}/{limit}: slow network or portal change]",
                                  incident=e.incident) from e
         self._quota_miss_streak = 0
+        self._worked_at = utcnow()
         return body
 
     async def _fetch_quota_once(self) -> dict[str, Any]:

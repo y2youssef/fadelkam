@@ -162,9 +162,10 @@ class LoginGuard:
             return "transient"
         return "unknown"
 
-    def end_session(self, reason: str, expired: bool = True) -> float | None:
+    def end_session(self, reason: str, expired: bool = True, last_seen: datetime | None = None) -> float | None:
         """Close the open session record; returns its lifetime in seconds (our main metric).
-        expired=False for sessions we ended ourselves (process restart) - excluded from stats."""
+        expired=False for sessions we ended ourselves (process restart) - excluded from stats.
+        last_seen: the session died unobserved (laptop off); it lived at least until then."""
         open_ = [s for s in self.d["sessions"] if not s["ended_at"]]
         if not open_:
             return None
@@ -172,8 +173,12 @@ class LoginGuard:
         for s in open_[:-1]:  # older dangling records can't be measured
             s.update(ended_at=iso(now), end_reason="unknown_dangling", expired=False, lifetime_s=None)
         s = open_[-1]
+        login = _parse(s["login_at"])
+        until = last_seen if last_seen and login < last_seen < now else now
         s.update(ended_at=iso(now), end_reason=reason, expired=expired,
-                 lifetime_s=round((now - _parse(s["login_at"])).total_seconds()))
+                 lifetime_s=round((until - login).total_seconds()))
+        if until is not now:
+            s["lifetime_lower_bound"] = True
         self._save()
         event(log, logging.INFO if expired else logging.DEBUG, "session.ended", reason=reason, expired=expired,
               lifetime_s=s["lifetime_s"])

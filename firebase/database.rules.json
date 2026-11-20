@@ -26,7 +26,8 @@
     "devices": {
       "$uid": {
         ".write": "auth != null && auth.uid === $uid && root.child('allowed').child($uid).exists()",
-        ".validate": "newData.hasChildren(['fcm', 'at'])",
+        ".validate": "newData.hasChildren(['at']) && (newData.hasChild('fid') || newData.hasChild('fcm'))",
+        "fid": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 512" },
         "fcm": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 512" },
         "at": { ".validate": "newData.val() === now" },
         "model": { ".validate": "newData.isString() && newData.val().length <= 64" },

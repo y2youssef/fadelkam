@@ -109,3 +109,56 @@ def test_keepalive_deadline_leaves_room_before_client_logout(settings):
     # room for a slow load (nav timeout), and after the normal keepalive threshold.
     assert settings.doc_max_age_s < settings.keepalive_deadline_s
     assert settings.keepalive_deadline_s + settings.nav_timeout_ms / 1000 < 900
+
+
+# ---------------------------------------------------------------- boot without network (2026-11-20)
+def test_start_without_network_does_not_crash(settings):
+    """10:45-11:09 local: DNS was down at boot, has_session_token() raised TransientError out of
+    start() and systemd restarted the server every 2 min (FAILURE_MODES #54)."""
+    c = make_client(settings)
+    c.page = FakePage("chrome-error://chromewebdata/", goto_error="net::ERR_NAME_NOT_RESOLVED")
+    assert asyncio.run(c._session_after_start()) is True      # decided by the cookie alone
+
+    class NoCookies(FakeCtx):
+        async def cookies(self):
+            return []
+    c.ctx = NoCookies()
+    assert asyncio.run(c._session_after_start()) is False
+
+
+def test_login_page_unreachable_is_transient_not_an_attempt(settings):
+    """No network when a login is due: retry later. Before, the login form 'missing' was reported
+    as a portal change (10 min wait + incident). Nothing is submitted, so the guard records nothing."""
+    c = make_client(settings)
+    c.page = FakePage("chrome-error://chromewebdata/", goto_error="net::ERR_INTERNET_DISCONNECTED")
+    with pytest.raises(TransientError, match="ERR_INTERNET_DISCONNECTED"):
+        asyncio.run(c.login())
+    assert c.guard.d["attempts"] == []
+
+
+class RecordingPage(FakePage):
+    def __init__(self, url: str) -> None:
+        super().__init__(url)
+        self.calls: list[str] = []
+
+    async def goto(self, url, **kw):
+        self.calls.append("goto")
+        self.url = url
+
+    async def reload(self, **kw):
+        self.calls.append("reload")
+
+
+@pytest.mark.parametrize("start_url, expected", [
+    (BASE + "#/login", ["goto", "reload"]),             # the 2026-11-20 case: form open for 10 min
+    (BASE + "#/accountoverview", ["goto", "reload"]),   # any portal page: a hash change isn't a load
+    ("about:blank", ["goto"]),                           # fresh browser: goto already loads a new page
+    ("chrome-error://chromewebdata/", ["goto"]),
+])
+def test_login_always_uses_a_fresh_page(settings, start_url, expected):
+    """The refused login on 2026-11-20 came from a 10-min-old page; the successful ones from fresh
+    pages (FAILURE_MODES #53)."""
+    c = make_client(settings)
+    c.page = RecordingPage(start_url)
+    asyncio.run(c._fresh_login_page())
+    assert c.page.calls == expected and c.page.url == BASE + "#/login"

@@ -35,6 +35,13 @@ def _ms_age(at: Any) -> str:
     return f"{s:.0f} s ago" if s < 120 else f"{s / 60:.0f} min ago" if s < 7200 else f"{s / 3600:.1f} h ago"
 
 
+def _push_id(d: Any) -> str | None:
+    """What a paired phone can be reached by: 'fid' (current) or 'token' (legacy)."""
+    if not isinstance(d, dict):
+        return None
+    return "fid" if d.get("fid") else "token" if d.get("fcm") else None
+
+
 def _load_rules() -> Any:
     return json.loads(RULES_FILE.read_text(encoding="utf-8"))
 
@@ -67,8 +74,8 @@ async def cmd_check(cfg: CloudConfig, auth: GoogleAuth, db: Rtdb) -> int:
     allowed = await db.get("allowed") or {}
     devices = await db.get("devices") or {}
     pairing = await db.get("pairing") or {}
-    print(f"phones       {len(allowed)} paired, {sum(1 for u in allowed if (devices.get(u) or {}).get('fcm'))} with a "
-          f"push token, {len(pairing)} pairing request(s)")
+    print(f"phones       {len(allowed)} paired, {sum(1 for u in allowed if _push_id(devices.get(u)))} with a "
+          f"push id, {len(pairing)} pairing request(s)")
     st = await db.get("state") or {}
     print(f"state        heartbeat {_ms_age(st.get('heartbeat_at'))}, status {(st.get('status') or {}).get('state')}, "
           f"reading {(st.get('quota') or {}).get('fetched_at')}")
@@ -131,7 +138,7 @@ async def cmd_devices(db: Rtdb) -> int:
     for uid, a in allowed.items():
         d = devices.get(uid) or {}
         print(f"{uid[:6]}…  {a.get('label', '?'):<20} paired {_ms_age(a.get('at')):<12} "
-              f"push token {'registered ' + _ms_age(d.get('at')) if d.get('fcm') else 'missing'}")
+              f"push {_push_id(d) or 'missing'} {_ms_age(d.get('at')) if _push_id(d) else ''}")
     return 0
 
 
@@ -151,7 +158,7 @@ async def cmd_revoke(db: Rtdb, prefix: str) -> int:
 
 async def cmd_test_push(settings: Settings, cfg: CloudConfig, http: httpx.AsyncClient, auth: GoogleAuth) -> int:
     sent = await CloudPublisher(settings, Hub(settings), cfg, http=http, auth=auth).send_test_push()
-    print(f"Sent to {sent} phone(s)." if sent else "No paired phone with a working push token yet.")
+    print(f"Sent to {sent} phone(s)." if sent else "No paired phone with a working push id yet.")
     return 0 if sent else 1
 
 

@@ -68,6 +68,9 @@ class Settings:
     # device (the owner's phone) just logged in and kicked us out (FAILURE_MODES #7), an instant
     # re-login would be two logins about a minute apart, the pattern WE locked us out for (#1b).
     session_lost_gap_s: int = 600
+    # ...but only if that session gave us data this recently. Older means it expired while nobody
+    # used it (laptop off or asleep), so no other device "just" logged in: no hold (#55).
+    session_recent_s: int = 600
     max_logins_per_hour: int = 4
     max_logins_per_day: int = 30
     lockout_margin_min: int = 5          # added on top of the lock duration WE reports
