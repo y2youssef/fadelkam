@@ -13,8 +13,8 @@ _Last updated: 2026-11-19_
 
 | Topic | Decision |
 |---|---|
-| **Where it runs** | The owner's **Linux laptop (CachyOS)** on home Wi-Fi does the scraping. Changed 2026-11-19: WE may flag non-Egyptian or datacenter IPs, and the session lives 16 h+ on a residential IP |
-| **Packaging** | Plain venv on the laptop. Docker image later, optional (e.g. a home Pi) |
+| **Where it runs** | The owner's **Windows PC**, in Docker (Docker Desktop, WSL 2), on home Wi-Fi, since 2026-11-20; the CachyOS laptop 2026-11-19 → 20. A home machine because WE may flag non-Egyptian or datacenter IPs, and the session lives 16 h+ on a residential IP |
+| **Packaging** | Docker (`compose.yaml`, `server/Dockerfile`: Python 3.14 + Google Chrome) since 2026-11-20. A venv still works for development |
 | **Phone side** | **Thin custom Android APK** (not ntfy app / MacroDroid) — gives a true in-place sticky notification |
 | **Push transport** | **Firebase** (changed 2026-11-19, replacing SSE + tunnel). The laptop writes to Realtime Database and sends FCM; the phone reads live while awake and is woken by FCM when asleep. Only outbound HTTPS from the laptop: no tunnel, no router, no domain. Compared against Tailscale (needs an always-on phone VPN) and Cloudflare Worker + D1 (can't wake a sleeping phone without adding FCM anyway). The local SSE API stays for development |
 | **Login automation** | **Fully automatic headless** login via real browser (Playwright). WE "sometimes asks SMS/captcha" → build a human-in-the-loop fallback |
@@ -73,10 +73,10 @@ _Last updated: 2026-11-19_
 ## 3. Architecture
 
 ```
-┌──────────────────── Laptop (CachyOS, home Wi-Fi, Egyptian IP) ────────────────────┐
+┌────────────────── Windows PC, Docker (home Wi-Fi, Egyptian IP) ───────────────────┐
 │  Playwright/Chrome (persistent profile) ──guarded login──▶ my.te.eg               │
 │        ▼                                                                          │
-│  Poller (90–180 s; keepalive reload before the SPA's 15 min logout)               │
+│  Poller (45 s while the phone's WE data is on, 12 min while off)                  │
 │        ▼                                                                          │
 │  Hub (latest reading, status, pending captcha) ──▶ local API + SSE (development)  │
 │        ▼                                                                          │
@@ -88,10 +88,10 @@ _Last updated: 2026-11-19_
                               ▼
 ┌──────────────── Samsung phone (Android 17 / One UI 9) ─────────────────┐
 │  Thin APK (android/):                                                  │
-│   • Pairing: anonymous sign-in, shows a 6-digit code, laptop approves  │
+│   • Pairing: anonymous sign-in, shows a 6-digit code, server approves  │
 │   • Mobile data on → system wakes us (PendingIntent network callback)  │
 │     → foreground service shows ONE Live Update, updated by FCM pushes  │
-│   • Mobile data off for 30 s → notification removed, service stops    │
+│   • Mobile data off for 5 s → notification removed, service stops     │
 │   • No polling, timers, wakelocks or open DB socket; one-off reads     │
 │   • Captcha: notification with the image → reply → /inbox/<uid>/answer│
 └────────────────────────────────────────────────────────────────────────┘
@@ -201,16 +201,21 @@ Built 2026-11-19, not yet run on the phone. Details and the battery design: `and
 
 ## 6. Environment status
 
-### Hand-over to the Windows PC (Docker), in progress since 2026-11-20 17:16 Cairo
-- The laptop service is **stopped and disabled** (`systemctl --user disable --now we-quota`, graceful stop
-  15:16:11 UTC). Nothing runs on the laptop; the phone shows "Laptop server stopped" until the PC starts.
-- Rehearsed on the laptop first: the container restored the live session from the copied `state/`
-  (no login), read in 2 s, Firebase and the phone inbox worked, healthy, stopped cleanly.
-- To carry to the PC privately (not on GitHub): `~/we-handover/we-state.tgz` (the final `state/`: browser
-  profile, session, login ledger, usage history, Firebase key) and `creds.txt`. Then server/README.md,
-  "Docker" (Windows notes). Last WE login: 2026-11-20 09:42:48 UTC.
+### Windows PC (Docker Desktop), the production host since 2026-11-20
+- Runs `compose.yaml` (image from `server/Dockerfile`: Python 3.14, Google Chrome 158), state in the
+  volume `we-state`, `creds.txt` as a Docker secret. Running and healthy by 20:19 UTC on 2026-11-20
+  (Firebase heartbeat 39 s old, fresh reading, status ok; checked from the laptop).
+- Hand-over: the laptop service was stopped and disabled at 15:16:11 UTC and its final `state/`
+  carried over (same browser profile, so WE sees the same device; login ledger, usage history,
+  Firebase key). Rehearsed on the laptop first: the container restored the live session with no
+  login. The PC started about 5 h later, so its first start may have logged in: check the logs
+  and record it here. Last laptop login: 2026-11-20 09:42:48 UTC.
+- Development continues on this PC (CLAUDE.md, "Commands"). To fill in from the PC: repo path,
+  Docker Desktop version, the 24/7 settings (server/README.md, "Docker"), and the Android toolchain
+  (android/README.md, "Build": needs the laptop's debug key and `google-services.json`).
 
 ### Laptop (CachyOS), the production host 2026-11-19 → 2026-11-20 (retired)
+- Retired 2026-11-20: `we-quota` service disabled, `server/state/` there is stale. Never start it again.
 - Repo at `~/fadelkam`. Python **3.14.10**, venv at `server/.venv`, all pinned deps install, 77/77
   offline tests pass (`server/pytest.ini` puts `server/` on the import path so plain `pytest -q` works).
 - Google Chrome 158 at `/opt/google/chrome/chrome` → run with `--chrome` (bundled Chromium not installed).
@@ -229,7 +234,7 @@ Built 2026-11-19, not yet run on the phone. Details and the battery design: `and
 - Awake: Plasma never suspends when idle and ignores the lid (AC and battery). Optional root step for
   the login screen: `server/systemd/logind-lid-on-ac.conf`.
 
-### Old PC (Windows), retired
+### Windows PC, notes from 2026-11-18 (before Docker and the laptop)
 - Primary dir: `D:\fadelkam` (git initialized).
 - Python **3.15.2** locally. **Playwright 1.65.2 installs and runs fine** (greenlet ships cp315
   wheels). venv at `server/.venv`. Local runs use the installed Google Chrome
@@ -245,7 +250,7 @@ Built 2026-11-19, not yet run on the phone. Details and the battery design: `and
 - `creds.txt` is in the project (git-ignored). Code reads it **at runtime only** and never logs/prints it.
 - Expected format (to be finalized): line 1 = WE service/phone number, line 2 = password
   — or `phone: ...` / `password: ...` key:value lines. Loader will be tolerant of both.
-- Will move to a `.env` / Docker secret for deployment.
+- In Docker it comes in as the secret `creds` (`compose.yaml`, mounted at `/run/secrets/creds`).
 
 ---
 
@@ -258,14 +263,19 @@ Built 2026-11-19, not yet run on the phone. Details and the battery design: `and
 6. ~~Android toolchain~~ on the laptop: done 2026-11-19 (`~/Android`: JDK 21, SDK, platform 37).
 7. ~~Thin APK~~ (4.4): built 2026-11-19.
 8. **End-to-end test** on the Samsung phone; tune One UI 9 battery settings.
-9. Later, optional: Docker image; OCR captcha with a confidence gate if captchas turn out frequent.
+9. ~~Docker image and the move to the Windows PC~~: done 2026-11-20.
+10. Later, optional: OCR captcha with a confidence gate if captchas turn out frequent.
 
 ---
 
 ## 9. Immediate next steps
 - [x] Firebase project created, key installed, rules deployed, `cloud check` ok (2026-11-19).
 - [x] Stop the server on the old PC **at least 10 min** before the laptop's first login (done 2026-11-19).
-- [ ] Owner, optional: install `server/systemd/logind-lid-on-ac.conf` (root) so the lid doesn't
-      suspend at the login screen while plugged in.
+- [-] ~~Owner, optional: install `server/systemd/logind-lid-on-ac.conf`~~ (obsolete: laptop retired).
 - [x] Android toolchain on the laptop, then the APK (2026-11-19).
-- [ ] Install the APK on the phone (USB or wireless debugging), pair, end-to-end test.
+- [x] Install the APK on the phone, pair, end-to-end test (2026-11-20).
+- [ ] PC: confirm the 24/7 settings (Docker Desktop at sign-in, sleep never, lock instead of sign
+      out, sign-in after updates) and that the counter appears when WE data turns on.
+- [ ] Delete the hand-over archives `we-state.tgz` (PC, USB stick, laptop `~/we-handover/`).
+- [ ] PC: Android toolchain, with the laptop's `~/.android/debug.keystore` and
+      `android/app/google-services.json`, before the next app update.

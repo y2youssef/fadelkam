@@ -2,15 +2,15 @@
 
 Shows the mobile data left as a sticky notification while mobile data is on. On Android 16+ it
 is a Live Update: a chip in the status bar (for example `3.5 GB`) and an entry in One UI's Now
-Bar. It hides itself about 30 s after mobile data goes off. The laptop (`../server`) does the
-scraping and sends everything through Firebase; the phone never talks to WE.
+Bar. It hides itself about 5 s after mobile data goes off. The server (`../server`, in Docker on
+the owner's PC) does the scraping and sends everything through Firebase; the phone never talks to WE.
 
 Package `com.fadelkam.y2y` (as registered in the Firebase project `fadelkam-y2y`); compile and
 target SDK 37 (the phone runs Android 17 / One UI 9); min SDK 26.
 
 ## How it saves battery
 
-- **Pushes, not polling.** The laptop sends FCM data messages: a reading at most every 2 min
+- **Pushes, not polling.** The server sends FCM data messages: a reading at most every 45 s
   and only when it changed (normal priority, so Doze batches them), and high priority only for
   a captcha or a login that needs a human. FCM shares Google Play services' one connection.
 - **No connection of our own.** The database socket is opened for one read or write and closed
@@ -20,7 +20,9 @@ target SDK 37 (the phone runs Android 17 / One UI 9); min SDK 26.
   then does `QuotaService` (a `specialUse` foreground service) start. It has no timers,
   wakelocks or polling, only a network callback, and it stops when mobile data goes away.
 
-## Build (on the laptop)
+## Build
+
+Linux (how the laptop did it):
 
 ```bash
 cd android
@@ -33,16 +35,30 @@ platform-tools (adb), `platforms;android-37.0`, build-tools 36.1.0. Gradle 9.9.1
 wrapper (checksum-pinned), with AGP 9.5.1 and Kotlin 2.4.21. `app/google-services.json` and
 `local.properties` are git-ignored.
 
+Windows (PowerShell), with JDK 21 and the Android SDK (Android Studio installs both; or the
+command-line tools plus `platforms;android-37.0`, `build-tools;36.1.0`, `platform-tools`):
+```powershell
+cd android
+$env:JAVA_HOME = "C:\path\to\jdk-21"; $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+.\gradlew.bat assembleDebug
+```
+
+**Moving the build to another machine:** copy two private files from the laptop first.
+- `~/.android/debug.keystore` → `%USERPROFILE%\.android\debug.keystore`. An update installs over
+  the app only with the same signing key; with a different one `adb install -r` fails (signature
+  mismatch), and the only way on is uninstall, reinstall and pair again.
+- `android/app/google-services.json` (from the Firebase console, git-ignored).
+
 ## Install and pair
 
 1. Install: `~/Android/Sdk/platform-tools/adb install -r app/build/outputs/apk/debug/app-debug.apk`
    (USB debugging, or Wireless debugging: `adb pair <ip:port> <code>`, then `adb connect <ip:port>`).
 2. Open **WE Quota**, tap **Pair this phone**. It shows a 6-digit code.
-3. On the laptop: `cd ~/fadelkam/server && .venv/bin/python -m app.cloud pair`, check the code
-   matches, approve.
+3. On the server machine, repo root: `docker compose exec we-quota python -m app.cloud pair`,
+   check the code matches, approve.
 4. In the app, tap the buttons that appear: **Allow notifications**, **battery: unrestricted**
    (lets the counter appear when mobile data turns on, and keeps One UI from deep-sleeping the
    app), and **Live Updates** if they're off.
-5. Test: `python -m app.cloud test-push` on the laptop.
+5. Test: `docker compose exec we-quota python -m app.cloud test-push`.
 
 Debug: `adb logcat -s QuotaService PushService Cellular`.

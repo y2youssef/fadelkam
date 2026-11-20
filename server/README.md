@@ -33,7 +33,7 @@ python -m app.server [--chrome] [--headed]   # API on 127.0.0.1:8080 + poller
   enforces 10 min between logins on *this* machine only. On one machine a second server,
   poller or browser probe refuses to start (lock on `state/instance.lock`).
 
-### As a service (the laptop)
+### As a systemd service (Linux; how the laptop ran it until 2026-11-20)
 
 ```bash
 systemctl --user enable ~/fadelkam/server/systemd/we-quota.service   # start with the user manager
@@ -58,7 +58,7 @@ too: `sudo install -Dm644 systemd/logind-lid-on-ac.conf /etc/systemd/logind.conf
 as the laptop, so the browser profile and WE's view of the device carry over), running as uid 1000,
 `state/` in the volume `we-state`, `creds.txt` as a Docker secret, `restart: unless-stopped`,
 graceful `docker compose stop` (closes Chrome, saves the session, tells the phone "stopped"), and a
-health check on `/healthz`. Tests run inside: `docker compose run --rm we-quota python -m pytest -q`.
+health check on `/healthz`. Tests run in the image, without the state or the creds: `docker run --rm we-quota python -m pytest -q`.
 
 **Only one machine may run the server** (CLAUDE.md). The instance lock works within one machine
 only, so moving it is a manual hand-over:
@@ -101,6 +101,13 @@ are fine). Docker Desktop only runs while you're signed in to Windows, so for 24
 - Windows Update restarts: Settings → Accounts → Sign-in options → **use my sign-in info to
   finish setting up after an update**, so Windows signs back in and Docker starts again.
 - Clock: keep "Set time automatically" on (Firebase sign-in and captcha answers depend on it).
+
+**Day to day:** edit the code, `docker compose build`, run the tests in the new image
+(`docker run --rm we-quota python -m pytest -q`), and only then `docker compose up -d`: it replaces
+the running server (graceful stop, then a start on the same volume; keep it more than 1 min away
+from a login). Diagnostics run inside the live container: `docker compose exec we-quota python -m
+app.probe status` (also `app.cloud check`, `app.usage days 7`). The image keeps the Chrome it was
+built with; to update Chrome, `docker compose build --no-cache`, then `docker compose up -d`.
 
 Building: the image installs the current Chrome stable (it must be at least as new as the profile).
 On a network without IPv6, apt is forced to IPv4 and retries; a build can still fail on a flaky
