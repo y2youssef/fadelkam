@@ -11,19 +11,23 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import logging
+import secrets
+import struct
 import sys
 import time
+import zlib
 from typing import Any
 
 import httpx
 
 from .cloud import (RULES_FILE, SERVER_TS, CloudConfig, CloudConfigError, CloudError, CloudPublisher, GoogleAuth,
-                    Rtdb, load_cloud_config, load_service_account)
+                    Rtdb, inbox_items, load_cloud_config, load_service_account)
 from .config import Settings, load_settings
 from .hub import Hub
-from .logs import event, get_logger, setup_logging
+from .logs import event, get_logger, iso, setup_logging
 
 log = get_logger("cloud")
 
@@ -162,11 +166,97 @@ async def cmd_test_push(settings: Settings, cfg: CloudConfig, http: httpx.AsyncC
     return 0 if sent else 1
 
 
+# 5x7 dot-matrix digits for the simulated captcha picture (no imaging library needed).
+_DIGITS = {
+    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+    "2": ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
+    "3": ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+    "5": ("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
+    "6": ("00110", "01000", "10000", "11110", "10001", "10001", "01110"),
+    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+    "9": ("01110", "10001", "10001", "01111", "00001", "00010", "01100"),
+}
+
+
+def digits_png(code: str, scale: int = 8, margin: int = 16) -> bytes:
+    """A grayscale PNG of `code` in dark dot-matrix digits on a light background."""
+    w = margin * 2 + len(code) * 6 * scale - scale
+    h = margin * 2 + 7 * scale
+    px = [[235] * w for _ in range(h)]
+    for i, ch in enumerate(code):
+        for r, row in enumerate(_DIGITS[ch]):
+            for c, bit in enumerate(row):
+                if bit == "1":
+                    x0, y0 = margin + (i * 6 + c) * scale, margin + r * scale
+                    for y in range(y0, y0 + scale):
+                        px[y][x0:x0 + scale] = [30] * scale
+    raw = b"".join(b"\x00" + bytes(row) for row in px)
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+def find_answer(event: str, payload: Any, cid: str) -> tuple[str, str] | None:
+    """(device uid, code) if this inbox stream event carries an answer to captcha `cid`."""
+    if event not in ("put", "patch") or not isinstance(payload, dict):
+        return None
+    for uid, kind, value in inbox_items(event, payload):
+        if kind == "answer" and isinstance(value, dict) and value.get("id") == cid:
+            return uid, str(value.get("code"))
+    return None
+
+
+async def cmd_simulate_captcha(settings: Settings, cfg: CloudConfig, http: httpx.AsyncClient, auth: GoogleAuth,
+                               db: Rtdb, wait_s: int) -> int:
+    """The whole captcha path, phone included, without WE: a picture of a random code is published
+    as a captcha, the phone is pushed, and the answer it sends back is checked against the code.
+    The running server sees the answer too and ignores it (no real captcha pending)."""
+    pub = CloudPublisher(settings, Hub(settings), cfg, http=http, auth=auth)
+    code, cid = f"{secrets.randbelow(10_000):04d}", "sim" + secrets.token_hex(3)
+    answer: asyncio.Future = asyncio.get_running_loop().create_future()
+
+    async def watch() -> None:
+        async for ev, data in db.stream("inbox"):
+            hit = find_answer(ev, data, cid)
+            if hit and not answer.done():
+                answer.set_result(hit)
+                return
+    watcher = asyncio.create_task(watch())
+    try:
+        await db.put("challenge", {"id": cid, "kind": "image_captcha", "since": iso(), "timeout_s": wait_s,
+                                   "simulated": True, "image_png_b64": base64.b64encode(digits_png(code)).decode()})
+        sent = await pub.send_challenge_push(cid, "image_captcha")
+        if not sent:
+            print("No paired phone with a push id.")
+            return 1
+        print(f"Simulated captcha {cid} pushed to {sent} phone(s). The picture shows {code}: type it on the phone "
+              f"(waiting up to {wait_s // 60} min).", flush=True)
+        uid, got = await asyncio.wait_for(answer, wait_s)
+    except asyncio.TimeoutError:
+        print("No answer arrived.")
+        return 1
+    finally:
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
+        await db.delete("challenge")
+    ok = got == code
+    print(f"Answer from device {uid[:6]}: {got!r} -> {'correct' if ok else 'WRONG, expected ' + repr(code)}. "
+          "Captcha removed from Firebase.")
+    return 0 if ok else 2
+
+
 async def main_async(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="python -m app.cloud")
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("check", "deploy-rules", "devices", "test-push"):
         sub.add_parser(name)
+    sc = sub.add_parser("simulate-captcha", help="a fake captcha to the phone and back; never touches WE")
+    sc.add_argument("--wait", type=int, default=300, help="seconds to wait for the answer")
     p = sub.add_parser("pair")
     p.add_argument("--approve", metavar="CODE", help="approve the request showing this code")
     p.add_argument("--label", help="name for this phone")
@@ -202,6 +292,8 @@ async def main_async(argv: list[str]) -> int:
                 return await cmd_revoke(db, args.uid)
             if args.cmd == "test-push":
                 return await cmd_test_push(s, cfg, http, auth)
+            if args.cmd == "simulate-captcha":
+                return await cmd_simulate_captcha(s, cfg, http, auth, db, args.wait)
         except CloudError as e:
             print(f"cloud: {e}", file=sys.stderr)
             return 1

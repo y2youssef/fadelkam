@@ -75,6 +75,9 @@ python -m app.cloud deploy-rules   # upload ../firebase/database.rules.json
 python -m app.cloud check          # token, DB round trip, rules deployed?, paired phones
 python -m app.server               # the uploader starts by itself when the key file exists
 ```
+**Test the captcha path without WE:** `python -m app.cloud simulate-captcha` publishes a picture of a
+random code as a captcha, pushes the phone, and checks the answer it sends back.
+
 **Pairing:** in the app tap Pair. It shows a 6-digit code. Run `python -m app.cloud pair` and
 confirm the same code. Also: `devices`, `revoke <uid>`, `test-push`.
 

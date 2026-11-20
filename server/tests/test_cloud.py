@@ -495,3 +495,24 @@ def test_rules_deny_by_default_and_scope_phone_writes():
     assert "!root.child('allowed')" in rules["pairing"]["$uid"][".write"]
     assert rules["inbox"]["$uid"]["$other"] == {".validate": False}
     assert ".write" not in rules["allowed"]["$uid"]                     # only the laptop pairs phones
+
+
+# ---------------------------------------------------------------- simulate-captcha (CLI)
+def test_simulated_captcha_picture_is_a_valid_png():
+    import struct
+    import zlib
+    from app.cloud_cli import digits_png
+    png = digits_png("4071")
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    w, h = struct.unpack(">II", png[16:24])
+    idat_len = struct.unpack(">I", png[33:37])[0]
+    assert len(zlib.decompress(png[41:41 + idat_len])) == h * (w + 1)   # one filter byte per row
+
+
+def test_simulated_captcha_answer_is_matched_by_id():
+    from app.cloud_cli import find_answer
+    put = {"path": "/uidA/answer", "data": {"id": "sim123", "code": "4071", "at": 1}}
+    assert find_answer("put", put, "sim123") == ("uidA", "4071")
+    assert find_answer("put", put, "simOTHER") is None                         # another captcha
+    assert find_answer("put", {"path": "/", "data": {"uidA": {"answer": put["data"]}}}, "sim123") == ("uidA", "4071")
+    assert find_answer("keep-alive", None, "sim123") is None

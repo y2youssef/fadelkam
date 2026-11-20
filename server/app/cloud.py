@@ -541,8 +541,7 @@ class CloudPublisher:
         snap = self.hub.snapshot()
         ch = snap.get("challenge")
         if ch and ch["id"] not in self._announced:
-            await self._push_all({"type": "challenge", "id": ch["id"], "kind": ch.get("kind")}, high=True,
-                                 collapse="challenge", ttl_s=self.s.challenge_timeout_s)
+            await self.send_challenge_push(ch["id"], ch.get("kind"))
             self._announced.add(ch["id"])
         state = (snap.get("status") or {}).get("state")
         if state != self._pushed_state:
@@ -580,6 +579,11 @@ class CloudPublisher:
                 REDACT.add(next(iter(target.values())), "push_id", keep_last=6)
             self._devices_at = time.monotonic()
         return self._devices
+
+    async def send_challenge_push(self, cid: str, kind: str | None) -> int:
+        """High priority: the phone must show the captcha now, even in Doze."""
+        return await self._push_all({"type": "challenge", "id": cid, "kind": kind}, high=True,
+                                    collapse="challenge", ttl_s=self.s.challenge_timeout_s)
 
     async def send_test_push(self) -> int:
         """`cloud test-push`: a notification to every paired phone. Returns how many got it."""

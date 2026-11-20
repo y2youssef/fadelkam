@@ -36,4 +36,6 @@ evidence is) before changing behaviour.
   running server (unit file in `server/systemd/`)
 - `python -m app.server [--chrome]`: poller + local API + Firebase uploader
 - `python -m app.probe status|session|page|reset`: guard state and diagnostics
-- `python -m app.cloud check|deploy-rules|pair|devices|revoke|test-push`: Firebase relay
+- `python -m app.cloud check|deploy-rules|pair|devices|revoke|test-push|simulate-captcha`: Firebase relay
+  (`simulate-captcha` sends a fake captcha to the phone and checks the answer; never touches WE)
+- `python -m app.usage [days N | sessions N]`: usage history (state/usage.db, mirrored to /usage)
