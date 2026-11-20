@@ -39,3 +39,5 @@ evidence is) before changing behaviour.
 - `python -m app.cloud check|deploy-rules|pair|devices|revoke|test-push|simulate-captcha`: Firebase relay
   (`simulate-captcha` sends a fake captcha to the phone and checks the answer; never touches WE)
 - `python -m app.usage [days N | sessions N]`: usage history (state/usage.db, mirrored to /usage)
+- Docker (repo root): `docker compose up -d --build`, `docker compose logs -f we-quota`. Moving to
+  another machine is a manual hand-over: disable the old one first (server/README.md, "Docker").

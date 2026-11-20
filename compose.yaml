@@ -1,0 +1,35 @@
+# WE quota server on an always-on machine. From the repo root:
+#   docker compose up -d --build        start (and at every boot, while Docker runs)
+#   docker compose logs -f we-quota      console log (full JSON events: in the state volume, logs/)
+#   docker compose stop                  graceful stop: closes Chrome, saves the session, tells the phone
+#
+# ACCOUNT SAFETY (CLAUDE.md): only ONE machine may run this. Before starting it here, stop AND disable
+# the laptop's service (systemctl --user disable --now we-quota). The instance lock only works within
+# one machine. Copy the laptop's server/state into the volume first (server/README.md, "Docker") so WE
+# sees the same device and the login guard keeps its record.
+services:
+  we-quota:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: we-quota:latest
+    restart: unless-stopped
+    init: true                 # reaps Chrome's helper processes; forwards SIGTERM to Python
+    stop_grace_period: 45s     # time to close Chrome and write "stopped" to Firebase
+    shm_size: 1gb              # Chrome
+    environment:
+      WE_POLL_INTERVAL_S: "45"       # owner's choice; idle pace (data off) stays 12 min
+      WE_CREDS_FILE: /run/secrets/creds
+    secrets:
+      - creds
+    volumes:
+      - we-state:/app/server/state
+    ports:
+      - "127.0.0.1:8080:8080"        # local API, this machine only (development)
+
+secrets:
+  creds:
+    file: ./creds.txt
+
+volumes:
+  we-state:

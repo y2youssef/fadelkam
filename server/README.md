@@ -52,6 +52,60 @@ in (after a reboot) logind handles the lid itself and suspends. To keep it awake
 too: `sudo install -Dm644 systemd/logind-lid-on-ac.conf /etc/systemd/logind.conf.d/we-quota.conf`
 (takes effect at the next boot).
 
+## Docker (another always-on machine)
+
+`server/Dockerfile` + `compose.yaml` (repo root): Python 3.14 and **Google Chrome** (the same browser
+as the laptop, so the browser profile and WE's view of the device carry over), running as uid 1000,
+`state/` in the volume `we-state`, `creds.txt` as a Docker secret, `restart: unless-stopped`,
+graceful `docker compose stop` (closes Chrome, saves the session, tells the phone "stopped"), and a
+health check on `/healthz`. Tests run inside: `docker compose run --rm we-quota python -m pytest -q`.
+
+**Only one machine may run the server** (CLAUDE.md). The instance lock works within one machine
+only, so moving it is a manual hand-over:
+
+1. **New machine:** install Docker, clone the repo, put `creds.txt` in the repo root
+   (`phone: …` / `password: …`, private).
+2. **Laptop:** stop it for good and pack its state (a live session token and the Firebase key:
+   move the file privately and delete it afterwards):
+   ```bash
+   systemctl --user disable --now we-quota          # also writes "stopped" to the phone
+   tar czf ~/we-state.tgz -C ~/fadelkam/server state
+   ```
+3. **New machine**, from the repo root, with `we-state.tgz` next to `compose.yaml`:
+   ```bash
+   docker compose build
+   docker compose run --rm --no-deps -v "$PWD/we-state.tgz:/tmp/we-state.tgz:ro" --entrypoint sh \
+       we-quota -c "tar xzf /tmp/we-state.tgz -C /app/server/state --strip-components=1"
+   docker compose up -d
+   docker compose logs -f we-quota      # want: browser.started session_restored=True, quota.reading
+   ```
+   Same profile, so WE sees the same device; if the session is still alive (likely within an
+   hour or so) there is no login at all. If one is needed, the copied login ledger still enforces
+   the gaps, and a captcha goes to the phone as usual. The phone needs no change.
+4. **Keep the machine awake and Docker starting at boot.** The phone's "checked HH:MM" shows when
+   it isn't.
+
+**On Windows (Docker Desktop, WSL 2 backend)**, PowerShell in the repo folder:
+```powershell
+docker compose build
+docker compose run --rm --no-deps -v "${PWD}\we-state.tgz:/tmp/we-state.tgz:ro" --entrypoint sh `
+    we-quota -c "tar xzf /tmp/we-state.tgz -C /app/server/state --strip-components=1"
+docker compose up -d
+docker compose logs -f we-quota
+Remove-Item we-state.tgz          # it holds a live session token and the Firebase key
+```
+`creds.txt` can be made in Notepad (two lines, `phone: …` and `password: …`; Windows line endings
+are fine). Docker Desktop only runs while you're signed in to Windows, so for 24/7:
+- Docker Desktop → Settings → General: **Start Docker Desktop when you sign in**.
+- Lock the screen instead of signing out. Power: **Sleep: Never** (plugged in), no hibernate.
+- Windows Update restarts: Settings → Accounts → Sign-in options → **use my sign-in info to
+  finish setting up after an update**, so Windows signs back in and Docker starts again.
+- Clock: keep "Set time automatically" on (Firebase sign-in and captcha answers depend on it).
+
+Building: the image installs the current Chrome stable (it must be at least as new as the profile).
+On a network without IPv6, apt is forced to IPv4 and retries; a build can still fail on a flaky
+Debian mirror: just run it again.
+
 ## Cloud (Firebase): how the phone gets the data
 
 The laptop only makes outbound HTTPS calls to Firebase, and the phone reads from there. Nothing

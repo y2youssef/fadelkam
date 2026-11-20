@@ -1,0 +1,11 @@
+# Only what the image needs (server/Dockerfile copies server/app, server/tests, firebase/).
+# Never in the image: credentials, the private state, the phone app, git history.
+**
+!server/app/
+!server/tests/
+!server/requirements.txt
+!server/requirements-dev.txt
+!server/pytest.ini
+!firebase/
+**/__pycache__/
+**/*.pyc

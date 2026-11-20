@@ -152,9 +152,10 @@ _Last updated: 2026-11-19_
   (FAILURE_MODES #49); fixed with `absorb_reraised_signals`, verified live ("stopped" written, no SIGKILL).
 
 ### 4.3 Packaging (`server/`)
-- [ ] `Dockerfile` based on `mcr.microsoft.com/playwright/python:vX.Y` (pinned, Chromium preinstalled).
-- [ ] `docker-compose.yml` (env for creds, volume for `state/`, port map).
-- [ ] `.env.example`, `requirements.txt` (pinned).
+- [x] `server/Dockerfile` (2026-11-20): Python 3.14 + Google Chrome stable (same browser as the laptop, so the
+  profile carries over), uid 1000, health check; built and tested on the laptop (121 tests, login page loads).
+- [x] `compose.yaml`: creds as a secret, `state/` volume, restart unless-stopped, 45 s stop grace, local API on 127.0.0.1.
+- [x] Pinned `requirements.txt`; hand-over steps to another machine in server/README.md ("Docker").
 
 ### 4.4 Android app (`android/`, package `com.fadelkam.y2y`, as registered in Firebase; `android/app/google-services.json` is in place)
 Built 2026-11-19, not yet run on the phone. Details and the battery design: `android/README.md`.
