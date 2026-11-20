@@ -162,3 +162,32 @@ def test_login_always_uses_a_fresh_page(settings, start_url, expected):
     c.page = RecordingPage(start_url)
     asyncio.run(c._fresh_login_page())
     assert c.page.calls == expected and c.page.url == BASE + "#/login"
+
+
+# ---------------------------------------------------------------- pace by the phone's WE data (2026-11-20)
+@pytest.mark.parametrize("data_on, expected", [
+    (lambda: True, "fast"), (lambda: None, "fast"), (None, "fast"),       # on, never heard, no history
+    (lambda: False, "idle"),                                               # off: nothing is being used
+])
+def test_pace_follows_the_phones_data(settings, data_on, expected):
+    p = Poller(settings, make_client(settings), data_on=data_on)
+    want = settings.poll_interval_s if expected == "fast" else settings.idle_poll_interval_s
+    assert p._pace() == want
+
+
+def test_pace_question_failing_means_fast(settings):
+    def broken():
+        raise RuntimeError("history unavailable")
+    assert Poller(settings, make_client(settings), data_on=broken)._pace() == settings.poll_interval_s
+
+
+def test_idle_pace_still_keeps_the_session_alive(settings):
+    """Idle must never outlast WE's 15-min logout: the keepalive cap still bounds every sleep."""
+    assert settings.idle_poll_interval_s * 1.1 > settings.keepalive_deadline_s  # so the cap is what decides
+    p = Poller(settings, make_client(settings), data_on=lambda: False)
+
+    class LivePage:
+        url = BASE + "#/accountoverview"
+    p.client.page = LivePage()
+    p.client._doc_loaded_at = __import__("time").monotonic()          # a fresh document
+    assert p._keepalive_cap(settings.idle_poll_interval_s * 1.1) <= settings.keepalive_deadline_s

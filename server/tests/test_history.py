@@ -112,3 +112,11 @@ def test_queue_all_since_only_recent(h):
     h.queue_all(since=t(0))
     keys = h.take_pending()
     assert "daily/2026-01-20" in keys and "daily/2026-01-10" not in keys
+
+
+def test_data_on_follows_the_last_session_event(h):
+    assert h.data_on() is None                                # never heard from the phone
+    h.add_session_event(True, ms(t(10)), "phone")
+    assert h.data_on() is True
+    h.add_session_event(False, ms(t(11)), "phone")
+    assert h.data_on() is False

@@ -173,6 +173,11 @@ class History:
         self._pending[f"sessions/{open_row[0]}"] = self.session_doc(open_row[0])
         return "ended"
 
+    def data_on(self) -> bool | None:
+        """The phone's WE mobile data per its last session event: True (on), False (off), None (never heard)."""
+        row = self.db.execute("SELECT end_ms FROM sessions ORDER BY start_ms DESC LIMIT 1").fetchone()
+        return None if row is None else row[0] is None
+
     def _session(self, start_ms: int) -> tuple[int, int | None] | None:
         return self.db.execute("SELECT start_ms, end_ms FROM sessions WHERE start_ms = ?", (start_ms,)).fetchone()
 

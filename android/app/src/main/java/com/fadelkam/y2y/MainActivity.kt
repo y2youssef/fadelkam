@@ -4,20 +4,16 @@ import android.Manifest
 import android.app.NotificationManager
 import android.content.Intent
 import android.graphics.BitmapFactory
-import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
-import android.text.InputType
 import android.util.Base64
+import android.view.Gravity
 import android.view.View
-import android.widget.Button
-import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -26,7 +22,14 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
+import androidx.core.widget.TextViewCompat
 import androidx.lifecycle.lifecycleScope
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.card.MaterialCardView
+import com.google.android.material.chip.Chip
+import com.google.android.material.color.MaterialColors
+import com.google.android.material.progressindicator.CircularProgressIndicator
+import com.google.android.material.textfield.TextInputEditText
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.DatabaseReference
@@ -42,29 +45,44 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
- * Pairing, the current reading, a captcha at full size, and the switches the sticky notification
- * depends on (notification permission, battery exemption, Live Updates). While this screen is
- * visible it listens to /state and /challenge live; it stops listening as soon as it's hidden.
+ * Pairing, the current reading, usage, a captcha at full size, and the switches the sticky
+ * notification depends on (notification permission, battery exemption, Live Updates). While this
+ * screen is visible it listens to /state, /challenge and /usage live; it stops as soon as it's hidden.
  */
 class MainActivity : ComponentActivity() {
-    private lateinit var reading: TextView
-    private lateinit var details: TextView
-    private lateinit var usage: TextView
-    private lateinit var status: TextView
-    private lateinit var codeView: TextView
-    private lateinit var pairBtn: Button
-    private lateinit var refreshBtn: Button
-    private lateinit var notifBtn: Button
-    private lateinit var batteryBtn: Button
-    private lateinit var liveBtn: Button
-    private lateinit var captchaBox: LinearLayout
+    private val zone: ZoneId = ZoneId.of("Africa/Cairo")
+
+    private lateinit var statusChip: Chip
+    private lateinit var readingCard: MaterialCardView
+    private lateinit var ring: CircularProgressIndicator
+    private lateinit var leftMb: TextView
+    private lateinit var ringPct: TextView
+    private lateinit var ofTotal: TextView
+    private lateinit var times: TextView
+    private lateinit var problem: TextView
+    private lateinit var refreshBtn: MaterialButton
+    private lateinit var captchaCard: MaterialCardView
     private lateinit var captchaImg: ImageView
-    private lateinit var captchaInput: EditText
+    private lateinit var captchaInput: TextInputEditText
+    private lateinit var usageCard: MaterialCardView
+    private lateinit var todayMb: TextView
+    private lateinit var bars: BarsView
+    private lateinit var sessionsList: LinearLayout
+    private lateinit var pairCard: MaterialCardView
+    private lateinit var pairHint: TextView
+    private lateinit var codeView: TextView
+    private lateinit var pairBtn: MaterialButton
+    private lateinit var setupCard: MaterialCardView
+    private lateinit var notifBtn: MaterialButton
+    private lateinit var batteryBtn: MaterialButton
+    private lateinit var liveBtn: MaterialButton
+    private lateinit var footer: TextView
 
     private var challengeId: String? = null
     private var listening = false
     private var allowedRef: DatabaseReference? = null
     private var allowedListener: ValueEventListener? = null
+    private var message: String? = null // connection / pairing message for the footer
 
     private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { render() }
 
@@ -76,13 +94,26 @@ class MainActivity : ComponentActivity() {
         }
 
         override fun onCancelled(e: DatabaseError) {
-            status.text = "Can't read the laptop's data: ${e.message}"
+            say("Can't read the laptop's data: ${e.message}")
             if (e.code == DatabaseError.PERMISSION_DENIED) { // unpaired on the laptop (cloud revoke)
                 unlisten()
                 Store.setPaired(this@MainActivity, false)
                 lifecycleScope.launch { connect() }
             }
         }
+    }
+
+    private val challengeListener = object : ValueEventListener {
+        override fun onDataChange(s: DataSnapshot) {
+            challengeId = s.child("id").value as? String
+            val img = (s.child("image_png_b64").value as? String)?.let {
+                runCatching { Base64.decode(it, Base64.DEFAULT) }.getOrNull()
+            }
+            captchaCard.isVisible = challengeId != null
+            captchaImg.setImageBitmap(img?.let { BitmapFactory.decodeByteArray(it, 0, it.size) })
+        }
+
+        override fun onCancelled(e: DatabaseError) = Unit
     }
 
     // ------------------------------------------------------------------ usage (laptop's /usage)
@@ -118,46 +149,12 @@ class MainActivity : ComponentActivity() {
         override fun onCancelled(e: DatabaseError) = Unit
     }
 
-    /** Today, a bar per day for the last 7 days, and the last sessions. Days are Cairo days. */
-    private fun renderUsage() {
-        val zone = ZoneId.of("Africa/Cairo")
-        val today = LocalDate.now(zone).toString()
-        val sb = StringBuilder("Today: ${Notifier.mb(daily.firstOrNull { it.first == today }?.second ?: 0.0)}\n\n")
-        val max = (daily.maxOfOrNull { it.second } ?: 0.0).coerceAtLeast(1.0)
-        for ((day, mb) in daily) {
-            val label = LocalDate.parse(day).format(DateTimeFormatter.ofPattern("EEE d", Locale.US))
-            val bar = "█".repeat((mb / max * 14).roundToInt()).ifEmpty { if (mb > 0) "▏" else "" }
-            sb.append(String.format(Locale.US, "%-7s %-14s %6.0f MB\n", label, bar, mb))
-        }
-        if (sessions.isNotEmpty()) {
-            sb.append("\nSessions (WE data on → off)\n")
-            val day = DateTimeFormatter.ofPattern("EEE HH:mm", Locale.US).withZone(zone)
-            val time = DateTimeFormatter.ofPattern("HH:mm", Locale.US).withZone(zone)
-            for ((start, end, mb) in sessions) {
-                val e = end?.let { time.format(Instant.ofEpochMilli(it)) } ?: "now"
-                sb.append(String.format(Locale.US, "%s → %-5s %7.1f MB\n", day.format(Instant.ofEpochMilli(start)), e, mb))
-            }
-        }
-        usage.text = sb.toString()
-    }
-
-    private val challengeListener = object : ValueEventListener {
-        override fun onDataChange(s: DataSnapshot) {
-            challengeId = s.child("id").value as? String
-            val img = (s.child("image_png_b64").value as? String)?.let {
-                runCatching { Base64.decode(it, Base64.DEFAULT) }.getOrNull()
-            }
-            captchaBox.isVisible = challengeId != null
-            captchaImg.setImageBitmap(img?.let { BitmapFactory.decodeByteArray(it, 0, it.size) })
-        }
-
-        override fun onCancelled(e: DatabaseError) = Unit
-    }
-
+    // ------------------------------------------------------------------ lifecycle
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContentView(buildUi())
+        setContentView(R.layout.activity_main)
+        bindViews()
         if (Store.isPaired(this)) lifecycleScope.launch { registerForPush() }
     }
 
@@ -182,28 +179,80 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
+    private fun bindViews() {
+        statusChip = findViewById(R.id.statusChip)
+        readingCard = findViewById(R.id.readingCard)
+        ring = findViewById(R.id.ring)
+        leftMb = findViewById(R.id.leftMb)
+        ringPct = findViewById(R.id.ringPct)
+        ofTotal = findViewById(R.id.ofTotal)
+        times = findViewById(R.id.times)
+        problem = findViewById(R.id.problem)
+        refreshBtn = findViewById(R.id.refreshBtn)
+        captchaCard = findViewById(R.id.captchaCard)
+        captchaImg = findViewById(R.id.captchaImg)
+        captchaInput = findViewById(R.id.captchaInput)
+        usageCard = findViewById(R.id.usageCard)
+        todayMb = findViewById(R.id.todayMb)
+        bars = findViewById(R.id.bars)
+        sessionsList = findViewById(R.id.sessionsList)
+        pairCard = findViewById(R.id.pairCard)
+        pairHint = findViewById(R.id.pairHint)
+        codeView = findViewById(R.id.codeView)
+        pairBtn = findViewById(R.id.pairBtn)
+        setupCard = findViewById(R.id.setupCard)
+        notifBtn = findViewById(R.id.notifBtn)
+        batteryBtn = findViewById(R.id.batteryBtn)
+        liveBtn = findViewById(R.id.liveBtn)
+        footer = findViewById(R.id.footer)
+
+        refreshBtn.setOnClickListener { refresh() }
+        pairBtn.setOnClickListener { pair() }
+        findViewById<View>(R.id.captchaSend).setOnClickListener { sendCaptcha() }
+        notifBtn.setOnClickListener {
+            if (Build.VERSION.SDK_INT >= 33) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        batteryBtn.setOnClickListener {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+        }
+        liveBtn.setOnClickListener {
+            if (Build.VERSION.SDK_INT >= 36) {
+                startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_PROMOTION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+            }
+        }
+        val root = findViewById<View>(R.id.root)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime()
+                or WindowInsetsCompat.Type.displayCutout())
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
+        }
+    }
+
     // ------------------------------------------------------------------ pairing
     private suspend fun connect() {
-        status.text = "Connecting…"
+        say("Connecting…")
         val uid = try {
             Cloud.signIn()
         } catch (e: Exception) {
-            status.text = "Sign-in failed (${e.javaClass.simpleName}). Check the connection and reopen the app."
+            say("Sign-in failed (${e.javaClass.simpleName}). Check the connection and reopen the app.")
             return
         }
         val allowed = try {
             Cloud.isAllowed(uid)
         } catch (e: Exception) {
-            status.text = "Firebase unreachable (${e.javaClass.simpleName}). Reopen the app to retry."
+            say("Firebase unreachable (${e.javaClass.simpleName}). Reopen the app to retry.")
             return
         }
         if (allowed) {
             onPaired()
         } else {
             Store.setPaired(this, false)
-            pairBtn.isVisible = true
+            render()
             if (codeView.isVisible) waitForApproval(uid) // a code is on screen: keep waiting for it
-            else status.text = "This phone isn't paired with the laptop yet."
+            else pairHint.text = "Tap below for a 6-digit code, then approve it on the laptop."
+            say(null)
         }
     }
 
@@ -215,7 +264,7 @@ class MainActivity : ComponentActivity() {
             try {
                 Cloud.requestPairing(uid, code)
             } catch (e: Exception) {
-                status.text = "Couldn't send the pairing request (${e.javaClass.simpleName})."
+                say("Couldn't send the pairing request (${e.javaClass.simpleName}).")
                 pairBtn.isEnabled = true
                 return@launch
             }
@@ -229,7 +278,7 @@ class MainActivity : ComponentActivity() {
 
     /** Live while this screen is visible; [connect] re-checks when it comes back. */
     private fun waitForApproval(uid: String) {
-        status.text = "On the laptop run\n    python -m app.cloud pair\nand approve it if it shows this code. Waiting…"
+        pairHint.text = "On the laptop run  python -m app.cloud pair  and approve it if it shows this code."
         if (allowedRef != null) return
         val ref = Cloud.db.getReference("allowed").child(uid)
         val l = object : ValueEventListener {
@@ -239,9 +288,7 @@ class MainActivity : ComponentActivity() {
                 lifecycleScope.launch { onPaired() }
             }
 
-            override fun onCancelled(e: DatabaseError) {
-                status.text = "Waiting failed: ${e.message}"
-            }
+            override fun onCancelled(e: DatabaseError) = say("Waiting failed: ${e.message}")
         }
         Cloud.acquire()
         ref.addValueEventListener(l)
@@ -259,24 +306,22 @@ class MainActivity : ComponentActivity() {
 
     private suspend fun onPaired() {
         Store.setPaired(this, true)
-        pairBtn.isVisible = false
         codeView.isVisible = false
-        status.text = "Paired."
+        say(null)
         registerForPush()
         Cellular.arm(this)
         Cellular.showIfWeData(this, "paired")
-        refreshBtn.isVisible = true
         listen()
         render()
     }
 
-    /** Push token up to date (it can change), and a hello so the laptop's log shows the phone. */
+    /** Push id up to date (it can change), and a hello so the laptop's log shows the phone. */
     private suspend fun registerForPush() {
         try {
             Cloud.registerDevice()
             Cloud.inbox("hello")
         } catch (e: Exception) {
-            status.text = "Push registration failed (${e.javaClass.simpleName}). Reopen the app to retry."
+            say("Push registration failed (${e.javaClass.simpleName}). Reopen the app to retry.")
         }
     }
 
@@ -303,16 +348,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refresh() {
+        refreshBtn.isEnabled = false
         lifecycleScope.launch {
             val ok = runCatching { Cloud.inbox("refresh") }.isSuccess
             Toast.makeText(this@MainActivity,
                 if (ok) "Asked the laptop to check now" else "Couldn't reach Firebase", Toast.LENGTH_SHORT).show()
+            refreshBtn.isEnabled = true
         }
     }
 
     private fun sendCaptcha() {
         val id = challengeId ?: return
-        val code = captchaInput.text.toString().trim()
+        val code = captchaInput.text?.toString()?.trim().orEmpty()
         if (!ActionReceiver.CODE_RE.matches(code)) {
             captchaInput.error = "3 to 12 letters or digits"
             return
@@ -320,7 +367,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val ok = runCatching { Cloud.inbox("answer", mapOf("id" to id, "code" to code)) }.isSuccess
             if (ok) {
-                captchaInput.text.clear()
+                captchaInput.text?.clear()
                 Notifier.captchaInfo(this@MainActivity, "Code sent", "The laptop is typing it in.")
             }
             Toast.makeText(this@MainActivity, if (ok) "Code sent" else "Not sent, try again", Toast.LENGTH_SHORT).show()
@@ -328,85 +375,107 @@ class MainActivity : ComponentActivity() {
     }
 
     // ------------------------------------------------------------------ screen
-    private fun render() {
-        val s = Store.load(this)
-        reading.text = s.remainingMb?.let { "${Notifier.mb(it)} left" } ?: "No reading yet"
-        val lines = mutableListOf<String>()
-        s.totalMb?.let { lines += "of ${Notifier.mb(it)} (${Notifier.size(it)})" + (s.renewsInDays?.let { d -> ", renews in $d days" } ?: "") }
-        s.offer?.let { lines += it }
-        s.fetchedAtMs?.let { lines += "Reading from ${Notifier.hhmm(it)}" }
-        s.state?.let { lines += "Laptop: $it" + (s.error?.let { e -> " ($e)" } ?: "") }
-        if (s.isStale()) lines += "No word from the laptop since ${s.heartbeatAtMs?.let(Notifier::hhmm)}"
-        lines += when {
-            Cellular.isUp(this) -> "Using WE mobile data: the counter is in your notifications"
-            Cellular.cellularUp(this) -> "Mobile data is on the other SIM: the WE counter is hidden"
-            else -> "Mobile data off: the counter is hidden"
-        }
-        details.text = lines.joinToString("\n")
-
-        notifBtn.isVisible = !Notifier.canNotify(this)
-        batteryBtn.isVisible = !getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
-        liveBtn.isVisible = Build.VERSION.SDK_INT >= 36 &&
-            !getSystemService(NotificationManager::class.java).canPostPromotedNotifications()
-        refreshBtn.isVisible = Store.isPaired(this)
+    private fun say(text: String?) {
+        message = text
+        if (::footer.isInitialized) render()
     }
 
-    private fun buildUi(): View {
-        val pad = (16 * resources.displayMetrics.density).toInt()
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        fun text(sizeSp: Float, bold: Boolean = false) = TextView(this).apply {
-            textSize = sizeSp
-            if (bold) setTypeface(typeface, Typeface.BOLD)
-            setPadding(0, pad / 2, 0, pad / 2)
-        }.also { col.addView(it) }
-        fun button(label: String, onClick: () -> Unit) = Button(this).apply {
-            text = label
-            isAllCaps = false
-            setOnClickListener { onClick() }
-            isVisible = false
-        }.also { col.addView(it) }
+    private fun render() {
+        val s = Store.load(this)
+        val paired = Store.isPaired(this)
+        readingCard.isVisible = paired
+        usageCard.isVisible = paired
+        pairCard.isVisible = !paired
 
-        text(22f, bold = true).text = "WE Quota"
-        reading = text(34f, bold = true)
-        details = text(16f)
-        usage = text(14f).apply { typeface = Typeface.MONOSPACE }
-        status = text(15f)
-        codeView = text(44f, bold = true).apply { letterSpacing = 0.2f; isVisible = false }
-        pairBtn = button("Pair this phone") { pair() }
-        refreshBtn = button("Check now") { refresh() }
+        val total = s.totalMb
+        val left = s.remainingMb
+        val share = if (total != null && left != null && total > 0) (left / total).coerceIn(0.0, 1.0) else null
+        leftMb.text = left?.let { "${Notifier.mb(it)} left" } ?: "No reading yet"
+        ringPct.text = share?.let { "${(it * 100).roundToInt()}%" } ?: "—"
+        ring.setProgressCompat(((share ?: 0.0) * 1000).toInt(), true)
+        ofTotal.text = total?.let { "of ${Notifier.mb(it)}" } ?: ""
+        times.text = listOfNotNull(
+            s.renewsInDays?.let { "Renews in $it days" },
+            listOfNotNull(
+                s.fetchedAtMs?.let { "Checked ${Notifier.hhmm(it)}" },
+                s.changedAtMs?.let { "changed ${Notifier.hhmm(it)}" },
+            ).joinToString(" · ").ifEmpty { null },
+        ).joinToString("\n")
+        val trouble = Notifier.problem(s)
+        problem.text = trouble
+        problem.isVisible = trouble != null
 
-        captchaBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; isVisible = false }
-        captchaBox.addView(TextView(this).apply { text = "WE wants a captcha:"; textSize = 18f })
-        captchaImg = ImageView(this).apply { adjustViewBounds = true; setPadding(0, pad / 2, 0, pad / 2) }
-        captchaBox.addView(captchaImg)
-        captchaInput = EditText(this).apply {
-            hint = "Code from the picture"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-        }
-        captchaBox.addView(captchaInput)
-        captchaBox.addView(Button(this).apply { text = "Send code"; isAllCaps = false; setOnClickListener { sendCaptcha() } })
-        col.addView(captchaBox)
-
-        notifBtn = button("Allow notifications") {
-            if (Build.VERSION.SDK_INT >= 33) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
-        batteryBtn = button("Let it run in the background (battery: unrestricted)") {
-            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
-        }
-        liveBtn = button("Turn on Live Updates (status bar chip)") {
-            if (Build.VERSION.SDK_INT >= 36) {
-                startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_PROMOTION_SETTINGS)
-                    .putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
-            }
+        val weData = Cellular.isUp(this)
+        statusChip.text = when {
+            !paired -> "Not paired"
+            trouble != null && s.isStale() -> "Laptop offline"
+            trouble != null -> "Needs attention"
+            weData -> "WE data on"
+            else -> "WE data off"
         }
 
-        val root = ScrollView(this).apply { addView(col) }
-        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime()
-                or WindowInsetsCompat.Type.displayCutout())
-            v.setPadding(bars.left + pad, bars.top + pad, bars.right + pad, bars.bottom + pad)
-            insets
+        val needNotif = !Notifier.canNotify(this)
+        val needBattery = !getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+        val needLive = Build.VERSION.SDK_INT >= 36 &&
+            !getSystemService(NotificationManager::class.java).canPostPromotedNotifications()
+        notifBtn.isVisible = needNotif
+        batteryBtn.isVisible = needBattery
+        liveBtn.isVisible = needLive
+        setupCard.isVisible = paired && (needNotif || needBattery || needLive)
+
+        footer.text = message ?: when {
+            !paired -> ""
+            weData -> "The counter is in your notifications while WE mobile data is on."
+            Cellular.cellularUp(this) -> "Mobile data is on the other SIM: the WE counter is hidden."
+            else -> "Mobile data is off: the counter is hidden."
         }
-        return root
+        renderUsage()
+    }
+
+    /** Today, a bar per day for the last 7 days, and the last sessions. Days are Cairo days. */
+    private fun renderUsage() {
+        val today = LocalDate.now(zone).toString()
+        todayMb.text = "Today ${Notifier.mb(daily.firstOrNull { it.first == today }?.second ?: 0.0)}"
+        // Always the last 7 days, so the chart keeps its shape (a day with no reading is 0).
+        val weekday = DateTimeFormatter.ofPattern("EEE", Locale.US)
+        val byDay = daily.toMap()
+        val todayDate = LocalDate.now(zone)
+        bars.bars = (6 downTo 0).map { back ->
+            val d = todayDate.minusDays(back.toLong())
+            BarsView.Bar(d.format(weekday), byDay[d.toString()] ?: 0.0, back == 0)
+        }
+
+        sessionsList.removeAllViews()
+        if (sessions.isEmpty()) {
+            sessionsList.addView(row("None yet: one starts when WE mobile data turns on", null))
+            return
+        }
+        val start = DateTimeFormatter.ofPattern("EEE HH:mm", Locale.US).withZone(zone)
+        val time = DateTimeFormatter.ofPattern("HH:mm", Locale.US).withZone(zone)
+        for ((from, to, mb) in sessions.take(5)) {
+            val end = to?.let { time.format(Instant.ofEpochMilli(it)) } ?: "now"
+            sessionsList.addView(row("${start.format(Instant.ofEpochMilli(from))} → $end",
+                String.format(Locale.US, "%.1f MB", mb)))
+        }
+    }
+
+    private fun row(left: String, right: String?): View {
+        val pad = (6 * resources.displayMetrics.density).toInt()
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, pad, 0, pad)
+            addView(TextView(context).apply {
+                text = left
+                TextViewCompat.setTextAppearance(this, com.google.android.material.R.style.TextAppearance_Material3_BodyMedium)
+                setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurface))
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            if (right != null) addView(TextView(context).apply {
+                text = right
+                gravity = Gravity.END
+                fontFeatureSettings = "tnum"
+                TextViewCompat.setTextAppearance(this, com.google.android.material.R.style.TextAppearance_Material3_BodyMedium)
+                setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant))
+            })
+        }
     }
 }

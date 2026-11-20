@@ -10,14 +10,21 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import android.os.Build
 import android.util.Base64
 import androidx.core.app.NotificationCompat
 import androidx.core.app.RemoteInput
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.IconCompat
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.roundToInt
 
 object Notifier {
     const val CH_QUOTA = "quota"
@@ -50,17 +57,14 @@ object Notifier {
     fun quota(c: Context, s: QuotaState): Notification {
         val stale = s.isStale()
         val problem = problem(s, stale)
-        val details = listOfNotNull(
-            s.totalMb?.let { "of ${mb(it)}" },
-            s.renewsInDays?.let { "renews in $it d" },
-        ).joinToString(" · ")
+        val fraction = fraction(s)
+        // Compact on purpose (owner, 2026-11-20: "it is huge"): a title and one line; the picture on
+        // the right carries the share left. Renewal, offer and history are in the app.
+        val checked = s.fetchedAtMs?.let { "checked ${hhmm(it)}" }
         val b = NotificationCompat.Builder(c, CH_QUOTA)
-            .setSmallIcon(R.drawable.ic_stat_data)
+            .setSmallIcon(ringIcon(c, fraction))
             .setContentTitle(s.remainingMb?.let { "${mb(it)} left" } ?: "No reading yet")
-            .setContentText(listOfNotNull(problem, details.ifEmpty { null }).joinToString(" · "))
-            .setStyle(NotificationCompat.BigTextStyle().bigText(
-                listOfNotNull(problem, details.ifEmpty { null }, s.offer, s.error?.takeIf { problem != null })
-                    .joinToString("\n")))
+            .setContentText(listOfNotNull(problem ?: s.totalMb?.let { "of ${mb(it)}" }, checked).joinToString(" · "))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setSilent(true)
@@ -74,19 +78,80 @@ object Notifier {
             .setShortCriticalText(shortText(s, stale))
         val fetched = s.fetchedAtMs
         if (fetched != null) b.setWhen(fetched).setShowWhen(true) else b.setShowWhen(false)
-        val total = s.totalMb
-        val left = s.remainingMb
-        if (total != null && left != null && total > 0) {
-            b.setProgress(1000, (left / total * 1000).toInt().coerceIn(0, 1000), false)
-        }
+        if (fraction != null) b.setLargeIcon(ringLarge(c, fraction))
         return b.build()
+    }
+
+    private fun fraction(s: QuotaState): Float? {
+        val total = s.totalMb ?: return null
+        val left = s.remainingMb ?: return null
+        return if (total > 0) (left / total).toFloat().coerceIn(0f, 1f) else null
+    }
+
+    /**
+     * Status bar icon (also in the Live Update chip): the data arrows inside a ring that fills with
+     * the share of data left. Android paints small icons in one colour from their alpha, so the
+     * empty part of the ring is faint and the filled part solid.
+     */
+    private fun ringIcon(c: Context, fraction: Float?): IconCompat {
+        val size = 96
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val stroke = size * 0.12f
+        val box = RectF(stroke / 2, stroke / 2, size - stroke / 2, size - stroke / 2)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE; strokeWidth = stroke; color = Color.WHITE; strokeCap = Paint.Cap.ROUND
+        }
+        paint.alpha = 85
+        canvas.drawOval(box, paint)
+        if (fraction != null && fraction > 0f) {
+            paint.alpha = 255
+            canvas.drawArc(box, -90f, 360f * fraction, false, paint)
+        }
+        ContextCompat.getDrawable(c, R.drawable.ic_stat_data)?.mutate()?.let { arrows ->
+            val inset = (size * 0.27f).toInt()
+            arrows.setBounds(inset, inset, size - inset, size - inset)
+            arrows.setTint(Color.WHITE)
+            arrows.draw(canvas)
+        }
+        return IconCompat.createWithBitmap(bmp)
+    }
+
+    /**
+     * The picture on the right of the notification: a solid purple disc with a white ring (share of
+     * data left) and the white percentage. Readable on light and dark notification backgrounds
+     * alike; the first version, a purple ring on a transparent background, vanished in dark mode
+     * (owner, 2026-11-20).
+     */
+    private fun ringLarge(c: Context, fraction: Float): Bitmap {
+        val size = 192
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val disc = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ContextCompat.getColor(c, R.color.notif_disc) }
+        canvas.drawCircle(size / 2f, size / 2f, size / 2f, disc)
+        val stroke = size * 0.085f
+        val inset = stroke / 2 + size * 0.08f
+        val box = RectF(inset, inset, size - inset, size - inset)
+        val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE; strokeWidth = stroke; strokeCap = Paint.Cap.ROUND; color = Color.WHITE
+        }
+        ring.alpha = 70
+        canvas.drawOval(box, ring)
+        ring.alpha = 255
+        if (fraction > 0f) canvas.drawArc(box, -90f, 360f * fraction, false, ring)
+        val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; textAlign = Paint.Align.CENTER; textSize = size * 0.24f; isFakeBoldText = true
+        }
+        val y = size / 2f - (text.descent() + text.ascent()) / 2
+        canvas.drawText("${(fraction * 100).roundToInt()}%", size / 2f, y, text)
+        return bmp
     }
 
     fun showQuota(c: Context, s: QuotaState) = notify(c, ID_QUOTA, quota(c, s))
 
     fun cancelQuota(c: Context) = c.getSystemService(NotificationManager::class.java).cancel(ID_QUOTA)
 
-    private fun problem(s: QuotaState, stale: Boolean): String? = when {
+    fun problem(s: QuotaState, stale: Boolean = s.isStale()): String? = when {
         s.state == "unpaired" -> "Not paired: open the app"
         s.state == "stopped" -> "Laptop server stopped"
         stale -> "Laptop offline since ${s.heartbeatAtMs?.let(::hhmm) ?: "?"}"

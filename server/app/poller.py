@@ -39,13 +39,16 @@ log = get_logger("poller")
 class Poller:
     def __init__(self, settings: Settings, client: WeClient, *, code_provider: CodeProvider | None = None,
                  on_update: Callable[[Quota], Awaitable[None]] | None = None,
-                 on_status: Callable[[dict], None] | None = None, wake: asyncio.Event | None = None) -> None:
+                 on_status: Callable[[dict], None] | None = None, wake: asyncio.Event | None = None,
+                 data_on: Callable[[], bool | None] | None = None) -> None:
         self.s = settings
         self.client = client
         self.code_provider = code_provider
         self.on_update = on_update
         self.on_status = on_status
         self.wake = wake or asyncio.Event()
+        self.data_on = data_on  # the phone's WE mobile data: True, False, or None (never heard)
+        self._fast: bool | None = None
         self.last: Quota | None = None
         self.status: dict = {"state": "starting", "since": iso()}
         self._transient_streak = 0
@@ -87,13 +90,12 @@ class Poller:
 
     async def tick(self) -> float:
         """One iteration; returns seconds to sleep before the next one."""
-        interval = self.s.poll_interval_s
         try:
             q = await self.poll_once()
             self._transient_streak = 0
             self._expired_streak = 0
             self._set_status("ok", remaining_mb=q.remaining_mb, at=q.fetched_at)
-            return interval
+            return self._pace()
         except SessionExpired as e:
             # First expiry: re-login almost at once. Repeated expiries with no reading in between
             # mean we're misjudging the session, so back off instead of looping every 5 s.
@@ -125,6 +127,24 @@ class Poller:
                                 recorder=self.client.recorder, error=e)
             self._set_status("error", error=f"{type(e).__name__}: {e}")
             return 300
+
+    def _pace(self) -> float:
+        """Fast (poll_interval_s) while the phone's WE data is on or unknown; idle_poll_interval_s while
+        it's off. Idle never means stopping: the session must stay alive (a stop would cost a login,
+        and maybe a captcha, every time data comes back), and _keepalive_cap still applies."""
+        on = None
+        if self.data_on is not None:
+            try:
+                on = self.data_on()
+            except Exception:  # never let the pace question break polling
+                event(log, logging.WARNING, "poller.pace_unknown", exc_info=True)
+        fast = on is not False
+        if fast != self._fast:
+            self._fast = fast
+            event(log, logging.INFO, "poller.pace", pace="fast" if fast else "idle",
+                  interval_s=self.s.poll_interval_s if fast else self.s.idle_poll_interval_s,
+                  phone_data={True: "on", False: "off", None: "unknown"}[on])
+        return self.s.poll_interval_s if fast else self.s.idle_poll_interval_s
 
     def _keepalive_cap(self, delay: float) -> float:
         """While a logged-in portal page is open, its SPA logs out (server-side too) 15 min after

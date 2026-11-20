@@ -61,6 +61,10 @@ class Settings:
     # failing, and the call came 4 s after the timeout.
     quota_miss_escalate: int = 3
     poll_interval_s: int = 180
+    # While the phone's WE mobile data is off nothing is being used: check this rarely instead. 12 min
+    # is also the keepalive reload WE's 15-min logout needs (#25), so the session stays and no login
+    # is needed when data comes back (the phone's "data on" then triggers an immediate check).
+    idle_poll_interval_s: int = 720
 
     # ---- login guard (protects the account from lockouts) ----
     min_login_gap_s: int = 600           # a login 45 s after another was refused as "max attempts"
@@ -120,6 +124,7 @@ def load_settings() -> Settings:
         quota_route=_env("WE_QUOTA_ROUTE", "/accountoverview"),
         refresh_hop_route=_env("WE_REFRESH_HOP_ROUTE", "/usage"),
         poll_interval_s=_env_int("WE_POLL_INTERVAL_S", 180),
+        idle_poll_interval_s=_env_int("WE_IDLE_POLL_INTERVAL_S", 720),
         min_login_gap_s=_env_int("WE_MIN_LOGIN_GAP_S", 600),
         session_lost_gap_s=_env_int("WE_SESSION_LOST_GAP_S", 600),
         max_logins_per_hour=_env_int("WE_MAX_LOGINS_PER_HOUR", 4),

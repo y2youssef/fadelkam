@@ -54,7 +54,9 @@ TRUSTED_DB_SUFFIXES = (".firebasedatabase.app", ".firebaseio.com")
 FCM_ENDPOINT = "https://fcm.googleapis.com"
 RULES_FILE = PROJECT_DIR / "firebase" / "database.rules.json"
 
-QUOTA_KEYS = ("remaining_mb", "total_mb", "used_mb", "offer", "expires_at", "renews_in_days", "fetched_at")
+# fetched_at: the last check of WE (every poll); changed_at: when the number last changed.
+QUOTA_KEYS = ("remaining_mb", "total_mb", "used_mb", "offer", "expires_at", "renews_in_days", "fetched_at",
+              "changed_at")
 STATUS_KEYS = ("state", "since", "retry_at", "streak", "kind", "error")
 ATTENTION = {"needs_human", "login_failed", "broken", "error"}  # worth a notification
 URGENT = {"needs_human", "login_failed"}                         # ...a high-priority one
@@ -344,14 +346,13 @@ def cloud_state(snap: dict[str, Any]) -> dict[str, Any]:
 
 
 def _changes(state: dict[str, Any] | None) -> Any:
-    """What counts as a change worth a write. A new reading time alone doesn't: the heartbeat
-    (every heartbeat_s) carries it, so the phone's "updated N min ago" lags by at most that,
-    and a phone listening on mobile data downloads ~300 writes a day instead of ~1000."""
+    """What counts as a change worth a write: anything, including a new check time (fetched_at),
+    so the phone can show "checked 14:30" (owner's request, 2026-11-20). That's a small write per
+    poll; it costs the phone nothing, because it never listens with the screen off (it reads once
+    on screen-on, and the app screen listens only while open). Pushes still go only on change."""
     if not state:
         return None
-    q = dict(state["quota"] or {})
-    q.pop("fetched_at", None)
-    return q, state["status"]
+    return state["quota"], state["status"]
 
 
 def inbox_items(ev: str, payload: dict[str, Any]) -> list[tuple[str, str, Any]]:
@@ -653,6 +654,8 @@ class CloudPublisher:
                 except Exception:
                     event(log, logging.ERROR, "history.write_failed", exc_info=True)
                     result = "error"
+            if result == "started":  # WE data came on: check at once (the poller may be in idle pace)
+                self.hub.wake("phone: WE data on")
             event(log, logging.INFO if ok else logging.WARNING, "cloud.session_event", device=uid[:6],
                   on=ev.get("on") if ok else None, at=iso(datetime.fromtimestamp(ev["t"] / 1000, timezone.utc)) if ok else None,
                   result=result)

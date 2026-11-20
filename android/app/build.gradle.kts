@@ -29,6 +29,7 @@ dependencies {
     implementation("com.google.firebase:firebase-messaging")
     implementation("com.google.firebase:firebase-installations") // the FID we register for pushes
     implementation("androidx.core:core-ktx:1.19.1")
+    implementation("com.google.android.material:material:1.14.0") // Material 3 look, light and dark
     implementation("androidx.activity:activity-ktx:1.13.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.11.0")

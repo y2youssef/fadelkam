@@ -1,8 +1,10 @@
 package com.fadelkam.y2y
 
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
@@ -10,6 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -49,6 +52,22 @@ class QuotaService : Service() {
     /** One more look a little later: right after a data-SIM switch the new network can come up
      *  before the data-SIM setting changes, and a change can land between our looks. */
     private val recheck = Runnable { look(again = false) }
+
+    /** Screen on: fetch /state once (at most once a minute), so the notification can say when the
+     *  laptop last checked. Nothing runs while the screen is off. */
+    private var lastScreenRead = 0L
+    private val screenOn = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastScreenRead < SCREEN_READ_GAP_MS) return
+            lastScreenRead = now
+            scope.launch {
+                runCatching { Cloud.read("state", timeoutMs = 10_000) }
+                    .onSuccess { if (it.exists()) Store.receive(this@QuotaService, QuotaState.fromSnapshot(it)) }
+                    .onFailure { Log.i(TAG, "screen-on read failed: ${it.javaClass.simpleName}") }
+            }
+        }
+    }
 
     private val net = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(n: Network) {
@@ -97,6 +116,8 @@ class QuotaService : Service() {
             return
         }
         beginSession()
+        ContextCompat.registerReceiver(this, screenOn, IntentFilter(Intent.ACTION_SCREEN_ON),
+            ContextCompat.RECEIVER_NOT_EXPORTED)
         cm.registerNetworkCallback(Cellular.request, net)
         // The callback reports the networks already up within moments. If data went off between
         // the check above and the registration, none come: this look catches that case.
@@ -140,6 +161,7 @@ class QuotaService : Service() {
         Cellular.arm(this) // hidden now: make sure something wakes us when WE data comes back
         main.removeCallbacksAndMessages(null)
         runCatching { cm.unregisterNetworkCallback(net) }
+        runCatching { unregisterReceiver(screenOn) }
         scope.cancel()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         super.onDestroy()
@@ -150,6 +172,7 @@ class QuotaService : Service() {
         private const val HIDE_GRACE_MS = 5_000L  // rides out a brief signal drop; data off hides in ~5 s
         private const val RECHECK_MS = 5_000L
         private const val FIRST_LOOK_MS = 10_000L
+        private const val SCREEN_READ_GAP_MS = 60_000L
 
         @Volatile
         private var instance: QuotaService? = null

@@ -5,12 +5,17 @@ import android.os.Handler
 import android.os.Looper
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.ValueEventListener
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ServerValue
 import com.google.firebase.installations.FirebaseInstallations
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -53,8 +58,33 @@ object Cloud {
 
     suspend fun isAllowed(uid: String): Boolean = read("allowed/$uid").exists()
 
+    /** A fresh read. With disk persistence on, get() answers from the cache if the connection
+     *  isn't up yet (seen 2026-11-20: an old /state came back), so wait for the connection first;
+     *  if it doesn't come, the cached copy is still better than nothing (Store.receive keeps the newer). */
     suspend fun read(path: String, timeoutMs: Long = TIMEOUT_MS): DataSnapshot =
-        online(timeoutMs) { db.getReference(path).get().await() }
+        online(timeoutMs) {
+            withTimeoutOrNull(timeoutMs / 2) { awaitConnected() }
+            db.getReference(path).get().await()
+        }
+
+    private suspend fun awaitConnected() = suspendCancellableCoroutine { cont ->
+        val ref = db.getReference(".info/connected")
+        val l = object : ValueEventListener {
+            override fun onDataChange(s: DataSnapshot) {
+                if (s.getValue(Boolean::class.java) == true) {
+                    ref.removeEventListener(this)
+                    if (cont.isActive) cont.resume(Unit)
+                }
+            }
+
+            override fun onCancelled(e: DatabaseError) {
+                ref.removeEventListener(this)
+                if (cont.isActive) cont.resume(Unit)
+            }
+        }
+        ref.addValueEventListener(l)
+        cont.invokeOnCancellation { ref.removeEventListener(l) }
+    }
 
     suspend fun requestPairing(uid: String, code: String) =
         write("pairing/$uid", mapOf("code" to code, "model" to model, "at" to ServerValue.TIMESTAMP))

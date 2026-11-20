@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- WE purple: the seed for the app's colours (App.kt builds a full light/dark scheme from it). -->
     <color name="brand">#5E2390</color>
-    <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Notification picture: a lighter WE purple, so the disc stands out on dark backgrounds
+         while white text on it keeps strong contrast (about 6:1). -->
+    <color name="notif_disc">#7340B8</color>
+    <style name="AppTheme" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#6B3FA0</item>
+    </style>
 </resources>

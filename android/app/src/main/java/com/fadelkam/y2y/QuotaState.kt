@@ -13,14 +13,18 @@ data class QuotaState(
     val totalMb: Double? = null,
     val offer: String? = null,
     val renewsInDays: Int? = null,
-    val fetchedAt: String? = null,   // ISO time of the reading on the laptop
+    val fetchedAt: String? = null,   // ISO time of the laptop's last check of WE
+    val changedAt: String? = null,   // ISO time the number last changed
     val state: String? = null,       // poller state: ok, degraded, needs_human, stopped, ... ("unpaired" is ours)
     val error: String? = null,
     val heartbeatAtMs: Long? = null, // server time of the laptop's last write (or of the last push)
     val heartbeatS: Int = 300,
 ) {
-    val fetchedAtMs: Long?
-        get() = fetchedAt?.let { runCatching { OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull() }
+    val fetchedAtMs: Long? get() = ms(fetchedAt)
+    val changedAtMs: Long? get() = ms(changedAt) ?: fetchedAtMs
+
+    private fun ms(iso: String?): Long? =
+        iso?.let { runCatching { OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull() }
 
     /** No sign of the laptop for 2.5 heartbeats: asleep, offline or crashed (FAILURE_MODES #44). */
     fun isStale(nowMs: Long = System.currentTimeMillis()): Boolean =
@@ -34,6 +38,7 @@ data class QuotaState(
                 remainingMb = d["remaining_mb"]?.toDoubleOrNull() ?: remainingMb,
                 totalMb = d["total_mb"]?.toDoubleOrNull() ?: totalMb,
                 fetchedAt = d["fetched_at"] ?: fetchedAt,
+                changedAt = d["fetched_at"] ?: changedAt, // a quota push means the number changed
                 state = d["state"] ?: state,
                 heartbeatAtMs = alive,
             )
@@ -44,7 +49,7 @@ data class QuotaState(
 
     fun toJson(): String = JSONObject().apply {
         put("remainingMb", remainingMb); put("totalMb", totalMb); put("offer", offer)
-        put("renewsInDays", renewsInDays); put("fetchedAt", fetchedAt); put("state", state)
+        put("renewsInDays", renewsInDays); put("fetchedAt", fetchedAt); put("changedAt", changedAt); put("state", state)
         put("error", error); put("heartbeatAtMs", heartbeatAtMs); put("heartbeatS", heartbeatS)
     }.toString()
 
@@ -71,7 +76,7 @@ data class QuotaState(
             return QuotaState(
                 remainingMb = dbl("remainingMb"), totalMb = dbl("totalMb"), offer = str("offer"),
                 renewsInDays = if (o.has("renewsInDays")) o.optInt("renewsInDays") else null,
-                fetchedAt = str("fetchedAt"), state = str("state"), error = str("error"),
+                fetchedAt = str("fetchedAt"), changedAt = str("changedAt"), state = str("state"), error = str("error"),
                 heartbeatAtMs = if (o.has("heartbeatAtMs")) o.optLong("heartbeatAtMs") else null,
                 heartbeatS = o.optInt("heartbeatS", 300),
             )
@@ -86,6 +91,7 @@ data class QuotaState(
                 offer = q.child("offer").value as? String,
                 renewsInDays = (q.child("renews_in_days").value as? Number)?.toInt(),
                 fetchedAt = q.child("fetched_at").value as? String,
+                changedAt = q.child("changed_at").value as? String,
                 state = st.child("state").value as? String,
                 error = st.child("error").value as? String,
                 heartbeatAtMs = (s.child("heartbeat_at").value as? Number)?.toLong(),

@@ -113,7 +113,8 @@ async def main_async(argv: list[str]) -> int:
                                            access_log=True, lifespan="off"))
     async with WeClient(s, creds, LoginGuard(s, creds.fingerprint)) as client:
         poller = Poller(s, client, code_provider=hub.code_provider, on_update=hub.on_quota,
-                        on_status=hub.on_status, wake=hub.refresh_event)
+                        on_status=hub.on_status, wake=hub.refresh_event,
+                        data_on=history.data_on if history is not None else None)
         tasks = [asyncio.create_task(poller.run_forever(), name="poller")]
         cloud = CloudPublisher(s, hub, cloud_cfg) if cloud_cfg else None
         if cloud:

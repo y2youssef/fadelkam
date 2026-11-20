@@ -121,7 +121,11 @@ class Hub:
 
     # ------------------------------------------------------------------ poller callbacks
     async def on_quota(self, quota: Quota) -> None:
+        prev = self.quota or {}
         self.quota = quota.as_dict()
+        # When the number last changed (fetched_at is now "last checked"): the phone shows both.
+        same = prev.get("remaining_mb") == quota.remaining_mb
+        self.quota["changed_at"] = (prev.get("changed_at") or prev.get("fetched_at")) if same and prev else quota.fetched_at
         if self.history is not None:
             try:
                 self.history.add_reading(datetime.fromisoformat(quota.fetched_at), quota.remaining_mb,
@@ -168,6 +172,11 @@ class Hub:
         self._code.set_result(code)
         event(log, logging.INFO, "challenge.code_received", id=self.challenge["id"], length=len(code))
         return "accepted"
+
+    def wake(self, reason: str) -> None:
+        """Check now, not rate-limited like request_refresh (e.g. the phone's WE data just came on)."""
+        self.refresh_event.set()
+        event(log, logging.INFO, "poller.woken", reason=reason)
 
     def request_refresh(self) -> float:
         """Wake the poller now. Returns 0 if accepted, else seconds to wait."""

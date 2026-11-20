@@ -188,23 +188,42 @@ def test_state_is_whitelisted(settings, fake):
     asyncio.run(go())
 
 
-def test_writes_only_on_change_or_heartbeat(settings, fake):
+def test_writes_on_each_check_change_or_heartbeat(settings, fake):
     async def go():
         hub, pub = make(settings, fake)
         await hub.on_quota(parse_free_units(REAL))
         await pub.sync_db()
-        await pub.sync_db()
+        await pub.sync_db()                                   # nothing new: no write
         patches = lambda: [w for w in fake.writes if w[0] == "PATCH" and w[1] == "/state"]
         assert len(patches()) == 1
-        hub.quota = {**hub.quota, "fetched_at": iso()}        # a new reading, same numbers
+        hub.quota = {**hub.quota, "fetched_at": "2099-01-01T00:00:00+00:00"}   # a new check, same numbers
         await pub.sync_db()
-        assert len(patches()) == 1
+        assert len(patches()) == 2                            # written: the phone shows "checked HH:MM"
+        assert fake.get("state/quota/fetched_at") == "2099-01-01T00:00:00+00:00"
         hub.quota = {**hub.quota, "remaining_mb": 3900.0}     # data was used
         await pub.sync_db()
-        assert len(patches()) == 2
+        assert len(patches()) == 3
         pub._force_write = True                               # heartbeat
         await pub.sync_db()
-        assert len(patches()) == 3 and fake.get("state/heartbeat_at") > 0
+        assert len(patches()) == 4 and fake.get("state/heartbeat_at") > 0
+    asyncio.run(go())
+
+
+def test_hub_tracks_when_the_number_last_changed(settings):
+    async def go():
+        hub = Hub(settings)
+        q = parse_free_units(REAL)
+        await hub.on_quota(q)
+        first = hub.quota["changed_at"]
+        assert first == q.fetched_at
+        q2 = parse_free_units(REAL)
+        q2.fetched_at = "2099-01-01T00:00:00+00:00"           # same number, later check
+        await hub.on_quota(q2)
+        assert hub.quota["changed_at"] == first and hub.quota["fetched_at"] == q2.fetched_at
+        q3 = parse_free_units(REAL)
+        q3.remaining_mb, q3.fetched_at = 100.0, "2099-01-02T00:00:00+00:00"
+        await hub.on_quota(q3)
+        assert hub.quota["changed_at"] == q3.fetched_at
     asyncio.run(go())
 
 
@@ -387,6 +406,7 @@ def test_phone_session_events_reach_the_history_and_are_cleared(settings, fake):
         for uid, kind, value in inbox_items("put", {"path": "/", "data": fake.tree["inbox"]}):
             await hub_pub.handle_inbox(uid, kind, value)
         assert hist.session_doc(start_ms)["end"] is not None
+        assert hub.refresh_event.is_set()                       # "data on" woke the poller for a check
         assert fake.get("inbox/uidA/session/-k1") is None and fake.get("inbox/uidA/session/-k2") is None
         # one event arriving on its own path, as the live stream sends it
         items = inbox_items("put", {"path": "/uidA/session/-k3", "data": {"on": True, "t": start_ms + 3_600_000, "at": 1}})
